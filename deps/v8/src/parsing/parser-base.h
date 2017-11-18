@@ -3144,7 +3144,7 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseUnaryExpression(
                                         expression,
                                         position());
 
-  } else if (is_async_function() && peek() == Token::AWAIT) {
+  } else if (peek() == Token::AWAIT) {
     classifier()->RecordFormalParameterInitializerError(
         scanner()->peek_location(),
         MessageTemplate::kAwaitExpressionFormalParameter);
@@ -4865,7 +4865,7 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseStatement(
     case Token::WHILE:
       return ParseWhileStatement(labels, ok);
     case Token::FOR:
-      if (V8_UNLIKELY(allow_harmony_async_iteration() && is_async_function() &&
+      if (V8_UNLIKELY(allow_harmony_async_iteration() &&
                       PeekAhead() == Token::AWAIT)) {
         return ParseForAwaitStatement(labels, ok);
       }

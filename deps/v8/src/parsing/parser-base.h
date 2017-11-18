@@ -712,11 +712,11 @@ class ParserBase {
     }
 
     *ok = false;
-    if (current == Token::AWAIT && !is_async_function()) {
-      ReportMessageAt(current_location,
-                      MessageTemplate::kAwaitNotInAsyncFunction, kSyntaxError);
-      return;
-    }
+    // if (current == Token::AWAIT && !is_async_function()) {
+    //   ReportMessageAt(current_location,
+    //                   MessageTemplate::kAwaitNotInAsyncFunction, kSyntaxError);
+    //   return;
+    // }
 
     ReportUnexpectedToken(next);
   }

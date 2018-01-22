@@ -84,7 +84,7 @@
           'v8_enable_handle_zapping': 1,
         },
         'defines': [ 'DEBUG', '_DEBUG', 'V8_ENABLE_CHECKS' ],
-        'cflags': [ '-g', '-O0' ],
+        'cflags': [ '-g', '-O0', '-mretpoline', ],
         'conditions': [
           ['target_arch=="x64"', {
             'msvs_configuration_platform': 'x64',
@@ -135,7 +135,7 @@
         'variables': {
           'v8_enable_handle_zapping': 0,
         },
-        'cflags': [ '-O3' ],
+        'cflags': [ '-O3', '-mretpoline', ],
         'conditions': [
           ['target_arch=="x64"', {
             'msvs_configuration_platform': 'x64',

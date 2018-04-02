@@ -56,6 +56,8 @@ def EnsureGit(v8_path):
     return False
   print "Initializing temporary git repository in v8."
   subprocess.check_call(["git", "init"], cwd=v8_path)
+  subprocess.check_call(["git", "config", "user.name", "\"Node.js TSC\""], cwd=v8_path)
+  subprocess.check_call(["git", "config", "user.email", "\"tsc@iojs.org\""], cwd=v8_path)
   subprocess.check_call(["git", "commit", "--allow-empty", "-m", "init"],
                         cwd=v8_path)
   return True

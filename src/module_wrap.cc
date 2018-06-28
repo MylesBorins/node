@@ -548,6 +548,12 @@ enum ResolveExtensionsOptions {
   ONLY_VIA_EXTENSIONS
 };
 
+inline bool ResolvesToFile(const URL& search) {
+  std::string filePath = search.ToFilePath();
+  Maybe<uv_file> check = CheckFile(filePath);
+  return !check.IsNothing();
+}
+
 template <ResolveExtensionsOptions options>
 Maybe<URL> ResolveExtensions(const URL& search) {
   if (options == TRY_EXACT_NAME) {
@@ -586,9 +592,9 @@ Maybe<URL> ResolveMain(Environment* env, const URL& search) {
     return Nothing<URL>();
   }
   if (!ShouldBeTreatedAsRelativeOrAbsolutePath(pjson.main)) {
-    return Resolve(env, "./" + pjson.main, search, IgnoreMain);
+    return ResolveRecurse(env, "./" + pjson.main, search, IgnoreMain);
   }
-  return Resolve(env, pjson.main, search, IgnoreMain);
+  return ResolveRecurse(env, pjson.main, search, IgnoreMain);
 }
 
 Maybe<URL> ResolveModule(Environment* env,
@@ -599,7 +605,7 @@ Maybe<URL> ResolveModule(Environment* env,
   do {
     dir = parent;
     Maybe<URL> check =
-        Resolve(env, "./node_modules/" + specifier, dir, CheckMain);
+        ResolveRecurse(env, "./node_modules/" + specifier, dir, CheckMain);
     if (!check.IsNothing()) {
       const size_t limit = specifier.find('/');
       const size_t spec_len =
@@ -632,10 +638,27 @@ Maybe<URL> ResolveDirectory(Environment* env,
 
 }  // anonymous namespace
 
-Maybe<URL> Resolve(Environment* env,
+Maybe<URL> ResolveRecurse(Environment* env,
                    const std::string& specifier,
                    const URL& base,
                    PackageMainCheck check_pjson_main) {
+  if (ShouldBeTreatedAsRelativeOrAbsolutePath(specifier)) {
+    URL resolved(specifier, base);
+    Maybe<URL> file = ResolveExtensions<TRY_EXACT_NAME>(resolved);
+    if (!file.IsNothing())
+      return file;
+    if (specifier.back() != '/') {
+      resolved = URL(specifier + "/", base);
+    }
+    return ResolveDirectory(env, resolved, check_pjson_main);
+  } else {
+    return ResolveModule(env, specifier, base);
+  }
+}
+
+Maybe<URL> Resolve(Environment* env,
+                   const std::string& specifier,
+                   const URL& base) {
   URL pure_url(specifier);
   if (!(pure_url.flags() & URL_FLAGS_FAILED)) {
     // just check existence, without altering
@@ -650,13 +673,9 @@ Maybe<URL> Resolve(Environment* env,
   }
   if (ShouldBeTreatedAsRelativeOrAbsolutePath(specifier)) {
     URL resolved(specifier, base);
-    Maybe<URL> file = ResolveExtensions<TRY_EXACT_NAME>(resolved);
-    if (!file.IsNothing())
-      return file;
-    if (specifier.back() != '/') {
-      resolved = URL(specifier + "/", base);
-    }
-    return ResolveDirectory(env, resolved, check_pjson_main);
+    if (ResolvesToFile(resolved))
+      return Just(resolved);
+    return Nothing<URL>();
   } else {
     return ResolveModule(env, specifier, base);
   }

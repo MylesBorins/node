@@ -3,7 +3,7 @@
 import {
   crashOnUnhandledRejection,
   expectsError
-} from '../common';
+} from '../common/index.mjs';
 
 crashOnUnhandledRejection();
 

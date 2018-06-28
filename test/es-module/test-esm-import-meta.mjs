@@ -1,6 +1,7 @@
 // Flags: --experimental-modules
+/* eslint-disable node-core/required-modules */
 
-import '../common';
+import '../common/index.mjs';
 import assert from 'assert';
 
 const fixtures = import.meta.require('../common/fixtures');

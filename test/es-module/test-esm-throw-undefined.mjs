@@ -1,7 +1,7 @@
 // Flags: --experimental-modules
 /* eslint-disable node-core/required-modules */
-import common from '../common/index.js';
 import assert from 'assert';
+const common = import.meta.require('../common');
 
 async function doTest() {
   await assert.rejects(

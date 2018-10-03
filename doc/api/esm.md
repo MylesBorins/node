@@ -97,7 +97,7 @@ import './foo.mjs?query=2'; // loads ./foo.mjs with query of "?query=2"
 
 For now, only modules using the `file:` protocol can be loaded.
 
-## CommonJS,  JSON, and Native Modules
+## CommonJS, JSON, and Native Modules
 
 CommonJS, JSON, and Native modules can be used with [`module.createRequireFromPath()`][].
 

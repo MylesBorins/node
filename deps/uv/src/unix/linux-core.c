@@ -44,6 +44,11 @@
 
 #define HAVE_IFADDRS_H 1
 
+#ifndef EPOLL_CLOEXEC
+# include <linux/fcntl.h>
+# define EPOLL_CLOEXEC O_CLOEXEC
+#endif
+
 #ifdef __UCLIBC__
 # if __UCLIBC_MAJOR__ < 0 && __UCLIBC_MINOR__ < 9 && __UCLIBC_SUBLEVEL__ < 32
 #  undef HAVE_IFADDRS_H

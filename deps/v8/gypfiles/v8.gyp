@@ -2461,10 +2461,23 @@
         '../third_party/antlr4/runtime/Cpp/runtime/src',
         '../src/torque',
       ],
-      'msvs_settings': {
-        'VCCLCompilerTool': {
-          'RuntimeTypeInfo': 'true',
-          'ExceptionHandling': 1,
+      # This is defined trough `configurations` for GYP+ninja compatibility
+      'configurations': {
+        'Debug': {
+          'msvs_settings': {
+            'VCCLCompilerTool': {
+              'RuntimeTypeInfo': 'true',
+              'ExceptionHandling': 1,
+            },
+          }
+        },
+        'Release': {
+          'msvs_settings': {
+            'VCCLCompilerTool': {
+              'RuntimeTypeInfo': 'true',
+              'ExceptionHandling': 1,
+            },
+          }
         },
       },
       'sources': [

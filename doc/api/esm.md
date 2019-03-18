@@ -47,19 +47,16 @@ node --experimental-modules my-app.mjs
 
 Files ending with `.js` or `.mjs`, or lacking any extension,
 will be loaded as ES modules when the `--type=module` flag is set.
-This flag also has a shorthand alias `-m`.
 
 ```sh
 node --experimental-modules --type=module my-app.js
-# or
-node --experimental-modules -m my-app.js
 ```
 
 For completeness there is also `--type=commonjs`, for explicitly running a `.js`
-file as CommonJS. This is the default behavior if `--type` or `-m` is
+file as CommonJS. This is the default behavior if `--type` is
 unspecified.
 
-The `--type=module` or `-m` flags can also be used to configure Node.js to treat
+The `--type=module` flag can also be used to configure Node.js to treat
 as an ES module input sent in via `--eval` or `--print` (or `-e` or `-p`) or
 piped to Node.js via `STDIN`.
 

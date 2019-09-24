@@ -39,6 +39,7 @@
 #include "src/heap/incremental-marking.h"
 #include "src/heap/mark-compact-inl.h"
 #include "src/heap/mark-compact.h"
+#include "src/heap/memory-measurement.h"
 #include "src/heap/memory-reducer.h"
 #include "src/heap/object-stats.h"
 #include "src/heap/objects-visiting-inl.h"
@@ -2780,12 +2781,18 @@ HeapObject Heap::AlignWithFiller(HeapObject object, int object_size,
   return object;
 }
 
-void Heap::RegisterNewArrayBuffer(JSArrayBuffer buffer) {
-  ArrayBufferTracker::RegisterNew(this, buffer);
+void Heap::RegisterBackingStore(JSArrayBuffer buffer,
+                                std::shared_ptr<BackingStore> backing_store) {
+  ArrayBufferTracker::RegisterNew(this, buffer, std::move(backing_store));
 }
 
-void Heap::UnregisterArrayBuffer(JSArrayBuffer buffer) {
-  ArrayBufferTracker::Unregister(this, buffer);
+std::shared_ptr<BackingStore> Heap::UnregisterBackingStore(
+    JSArrayBuffer buffer) {
+  return ArrayBufferTracker::Unregister(this, buffer);
+}
+
+std::shared_ptr<BackingStore> Heap::LookupBackingStore(JSArrayBuffer buffer) {
+  return ArrayBufferTracker::Lookup(this, buffer);
 }
 
 void Heap::ConfigureInitialOldGenerationSize() {
@@ -3387,19 +3394,22 @@ void Heap::RegisterDeserializedObjectsForBlackAllocation(
   }
 }
 
-void Heap::NotifyObjectLayoutChange(HeapObject object, int size,
-                                    const DisallowHeapAllocation&) {
+void Heap::NotifyObjectLayoutChange(
+    HeapObject object, const DisallowHeapAllocation&,
+    InvalidateRecordedSlots invalidate_recorded_slots) {
   if (incremental_marking()->IsMarking()) {
     incremental_marking()->MarkBlackAndVisitObjectDueToLayoutChange(object);
     if (incremental_marking()->IsCompacting() &&
+        invalidate_recorded_slots == InvalidateRecordedSlots::kYes &&
         MayContainRecordedSlots(object)) {
       MemoryChunk::FromHeapObject(object)
-          ->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(object, size);
+          ->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(object);
     }
   }
-  if (MayContainRecordedSlots(object)) {
+  if (invalidate_recorded_slots == InvalidateRecordedSlots::kYes &&
+      MayContainRecordedSlots(object)) {
     MemoryChunk::FromHeapObject(object)
-        ->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(object, size);
+        ->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(object);
   }
 #ifdef VERIFY_HEAP
   if (FLAG_verify_heap) {
@@ -3688,8 +3698,7 @@ void Heap::MemoryPressureNotification(MemoryPressureLevel level,
       isolate()->stack_guard()->RequestGC();
       auto taskrunner = V8::GetCurrentPlatform()->GetForegroundTaskRunner(
           reinterpret_cast<v8::Isolate*>(isolate()));
-      taskrunner->PostTask(
-          base::make_unique<MemoryPressureInterruptTask>(this));
+      taskrunner->PostTask(std::make_unique<MemoryPressureInterruptTask>(this));
     }
   }
 }
@@ -3750,6 +3759,11 @@ bool Heap::InvokeNearHeapLimitCallback() {
     }
   }
   return false;
+}
+
+Handle<JSPromise> Heap::MeasureMemory(Handle<NativeContext> context,
+                                      v8::MeasureMemoryMode mode) {
+  return memory_measurement_->EnqueueRequest(context, mode);
 }
 
 void Heap::CollectCodeStatistics() {
@@ -4101,6 +4115,17 @@ void CollectSlots(MemoryChunk* chunk, Address start, Address end,
         return KEEP_SLOT;
       },
       SlotSet::PREFREE_EMPTY_BUCKETS);
+  if (direction == OLD_TO_NEW) {
+    RememberedSetSweeping::Iterate(
+        chunk,
+        [start, end, untyped](MaybeObjectSlot slot) {
+          if (start <= slot.address() && slot.address() < end) {
+            untyped->insert(slot.address());
+          }
+          return KEEP_SLOT;
+        },
+        SlotSet::PREFREE_EMPTY_BUCKETS);
+  }
   RememberedSet<direction>::IterateTyped(
       chunk, [=](SlotType type, Address slot) {
         if (start <= slot && slot < end) {
@@ -4292,6 +4317,7 @@ void Heap::IterateStrongRoots(RootVisitor* v, VisitMode mode) {
   FixStaleLeftTrimmedHandlesVisitor left_trim_visitor(this);
   isolate_->handle_scope_implementer()->Iterate(&left_trim_visitor);
   isolate_->handle_scope_implementer()->Iterate(v);
+  isolate_->IterateDeferredHandles(&left_trim_visitor);
   isolate_->IterateDeferredHandles(v);
   v->Synchronize(VisitorSynchronization::kHandleScope);
 
@@ -4883,9 +4909,9 @@ HeapObject Heap::EnsureImmovableCode(HeapObject heap_object, int object_size) {
   return heap_object;
 }
 
-HeapObject Heap::AllocateRawWithLightRetry(int size, AllocationType allocation,
-                                           AllocationOrigin origin,
-                                           AllocationAlignment alignment) {
+HeapObject Heap::AllocateRawWithLightRetrySlowPath(
+    int size, AllocationType allocation, AllocationOrigin origin,
+    AllocationAlignment alignment) {
   HeapObject result;
   AllocationResult alloc = AllocateRaw(size, allocation, origin, alignment);
   if (alloc.To(&result)) {
@@ -4905,12 +4931,12 @@ HeapObject Heap::AllocateRawWithLightRetry(int size, AllocationType allocation,
   return HeapObject();
 }
 
-HeapObject Heap::AllocateRawWithRetryOrFail(int size, AllocationType allocation,
-                                            AllocationOrigin origin,
-                                            AllocationAlignment alignment) {
+HeapObject Heap::AllocateRawWithRetryOrFailSlowPath(
+    int size, AllocationType allocation, AllocationOrigin origin,
+    AllocationAlignment alignment) {
   AllocationResult alloc;
   HeapObject result =
-      AllocateRawWithLightRetry(size, allocation, origin, alignment);
+      AllocateRawWithLightRetrySlowPath(size, allocation, origin, alignment);
   if (!result.is_null()) return result;
 
   isolate()->counters()->gc_last_resort_from_handles()->Increment();
@@ -5043,6 +5069,7 @@ void Heap::SetUpSpaces() {
 #endif  // ENABLE_MINOR_MC
   array_buffer_collector_.reset(new ArrayBufferCollector(this));
   gc_idle_time_handler_.reset(new GCIdleTimeHandler());
+  memory_measurement_.reset(new MemoryMeasurement(isolate()));
   memory_reducer_.reset(new MemoryReducer(this));
   if (V8_UNLIKELY(TracingFlags::is_gc_stats_enabled())) {
     live_object_stats_.reset(new ObjectStats(this));
@@ -5408,13 +5435,6 @@ void Heap::CompactWeakArrayLists(AllocationType allocation) {
   DCHECK_IMPLIES(allocation == AllocationType::kOld, InOldSpace(*scripts));
   scripts = CompactWeakArrayList(this, scripts, allocation);
   set_script_list(*scripts);
-
-  Handle<WeakArrayList> no_script_list(noscript_shared_function_infos(),
-                                       isolate());
-  DCHECK_IMPLIES(allocation == AllocationType::kOld,
-                 InOldSpace(*no_script_list));
-  no_script_list = CompactWeakArrayList(this, no_script_list, allocation);
-  set_noscript_shared_function_infos(*no_script_list);
 }
 
 void Heap::AddRetainedMap(Handle<Map> map) {
@@ -5529,39 +5549,55 @@ Address Heap::store_buffer_overflow_function_address() {
   return FUNCTION_ADDR(StoreBuffer::StoreBufferOverflow);
 }
 
+void Heap::MoveStoreBufferEntriesToRememberedSet() {
+  store_buffer()->MoveAllEntriesToRememberedSet();
+}
+
 void Heap::ClearRecordedSlot(HeapObject object, ObjectSlot slot) {
+#ifndef V8_DISABLE_WRITE_BARRIERS
   DCHECK(!IsLargeObject(object));
   Page* page = Page::FromAddress(slot.address());
   if (!page->InYoungGeneration()) {
     DCHECK_EQ(page->owner_identity(), OLD_SPACE);
+
     store_buffer()->MoveAllEntriesToRememberedSet();
     RememberedSet<OLD_TO_NEW>::Remove(page, slot.address());
+    RememberedSetSweeping::Remove(page, slot.address());
   }
+#endif
 }
 
 #ifdef DEBUG
 void Heap::VerifyClearedSlot(HeapObject object, ObjectSlot slot) {
+#ifndef V8_DISABLE_WRITE_BARRIERS
   DCHECK(!IsLargeObject(object));
   if (InYoungGeneration(object)) return;
   Page* page = Page::FromAddress(slot.address());
   DCHECK_EQ(page->owner_identity(), OLD_SPACE);
   store_buffer()->MoveAllEntriesToRememberedSet();
-  CHECK(!RememberedSet<OLD_TO_NEW>::Contains(page, slot.address()));
-  // Old to old slots are filtered with invalidated slots.
+  // Slots are filtered with invalidated slots.
+  CHECK_IMPLIES(RememberedSet<OLD_TO_NEW>::Contains(page, slot.address()),
+                page->RegisteredObjectWithInvalidatedSlots<OLD_TO_NEW>(object));
   CHECK_IMPLIES(RememberedSet<OLD_TO_OLD>::Contains(page, slot.address()),
                 page->RegisteredObjectWithInvalidatedSlots<OLD_TO_OLD>(object));
+#endif
 }
 #endif
 
 void Heap::ClearRecordedSlotRange(Address start, Address end) {
+#ifndef V8_DISABLE_WRITE_BARRIERS
   Page* page = Page::FromAddress(start);
   DCHECK(!page->IsLargePage());
   if (!page->InYoungGeneration()) {
     DCHECK_EQ(page->owner_identity(), OLD_SPACE);
+
     store_buffer()->MoveAllEntriesToRememberedSet();
     RememberedSet<OLD_TO_NEW>::RemoveRange(page, start, end,
                                            SlotSet::KEEP_EMPTY_BUCKETS);
+    RememberedSetSweeping::RemoveRange(page, start, end,
+                                       SlotSet::KEEP_EMPTY_BUCKETS);
   }
+#endif
 }
 
 PagedSpace* PagedSpaceIterator::Next() {

@@ -113,7 +113,10 @@ void String::MakeThin(Isolate* isolate, String internalized) {
   bool has_pointers = StringShape(*this).IsIndirect();
 
   int old_size = this->Size();
-  isolate->heap()->NotifyObjectLayoutChange(*this, old_size, no_gc);
+  // Slot invalidation is not necessary here: ThinString only stores tagged
+  // value, so it can't store an untagged value in a recorded slot.
+  isolate->heap()->NotifyObjectLayoutChange(*this, no_gc,
+                                            InvalidateRecordedSlots::kNo);
   bool one_byte = internalized.IsOneByteRepresentation();
   Handle<Map> map = one_byte ? isolate->factory()->thin_one_byte_string_map()
                              : isolate->factory()->thin_string_map();
@@ -158,7 +161,7 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   bool has_pointers = StringShape(*this).IsIndirect();
 
   if (has_pointers) {
-    isolate->heap()->NotifyObjectLayoutChange(*this, size, no_allocation);
+    isolate->heap()->NotifyObjectLayoutChange(*this, no_allocation);
   }
   // Morph the string to an external string by replacing the map and
   // reinitializing the fields.  This won't work if the space the existing
@@ -232,7 +235,7 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
   bool has_pointers = StringShape(*this).IsIndirect();
 
   if (has_pointers) {
-    isolate->heap()->NotifyObjectLayoutChange(*this, size, no_allocation);
+    isolate->heap()->NotifyObjectLayoutChange(*this, no_allocation);
   }
   // Morph the string to an external string by replacing the map and
   // reinitializing the fields.  This won't work if the space the existing
@@ -598,9 +601,8 @@ void String::WriteToFlat(String src, sinkchar* sink, int f, int t) {
   String source = src;
   int from = f;
   int to = t;
-  while (true) {
+  while (from < to) {
     DCHECK_LE(0, from);
-    DCHECK_LE(from, to);
     DCHECK_LE(to, source.length());
     switch (StringShape(source).full_representation_tag()) {
       case kOneByteStringTag | kExternalStringTag: {
@@ -678,6 +680,7 @@ void String::WriteToFlat(String src, sinkchar* sink, int f, int t) {
         break;
     }
   }
+  DCHECK_EQ(from, to);
 }
 
 template <typename SourceChar>

@@ -172,8 +172,9 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
       parsing::ReportErrorsAndStatisticsMode stats_mode);
 
   bool AllowsLazyParsingWithoutUnresolvedVariables() const {
-    return scope()->AllowsLazyParsingWithoutUnresolvedVariables(
-        original_scope_);
+    return !MaybeParsingArrowhead() &&
+           scope()->AllowsLazyParsingWithoutUnresolvedVariables(
+               original_scope_);
   }
 
   bool parse_lazily() const { return mode_ == PARSE_LAZILY; }
@@ -300,6 +301,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
                              ZonePtrList<const AstRawString>* names);
   Variable* CreateSyntheticContextVariable(const AstRawString* synthetic_name);
   Variable* CreatePrivateNameVariable(ClassScope* scope, VariableMode mode,
+                                      IsStaticFlag is_static_flag,
                                       const AstRawString* name);
   FunctionLiteral* CreateInitializerFunction(
       const char* name, DeclarationScope* scope,
@@ -778,12 +780,12 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
 
   Expression* ExpressionFromLiteral(Token::Value token, int pos);
 
-  V8_INLINE VariableProxy* ExpressionFromPrivateName(ClassScope* class_scope,
-                                                     const AstRawString* name,
-                                                     int start_position) {
+  V8_INLINE VariableProxy* ExpressionFromPrivateName(
+      PrivateNameScopeIterator* private_name_scope, const AstRawString* name,
+      int start_position) {
     VariableProxy* proxy = factory()->ast_node_factory()->NewVariableProxy(
         name, NORMAL_VARIABLE, start_position);
-    class_scope->AddUnresolvedPrivateName(proxy);
+    private_name_scope->AddUnresolvedPrivateName(proxy);
     return proxy;
   }
 

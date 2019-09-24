@@ -13,7 +13,6 @@ import sys
 import time
 
 from . import base
-from ..local import junit_output
 
 
 # Base dir of the build products for Release and Debug.
@@ -57,8 +56,15 @@ class ResultsTracker(base.TestProcObserver):
 
 
 class ProgressIndicator(base.TestProcObserver):
+  def __init__(self):
+    super(base.TestProcObserver, self).__init__()
+    self.options = None
+
   def finished(self):
     pass
+
+  def configure(self, options):
+    self.options = options
 
 
 class SimpleProgressIndicator(ProgressIndicator):
@@ -114,8 +120,7 @@ class VerboseProgressIndicator(SimpleProgressIndicator):
     sys.stdout.flush()
     self._last_printed_time = time.time()
 
-  def _on_result_for(self, test, result):
-    super(VerboseProgressIndicator, self)._on_result_for(test, result)
+  def _message(self, test, result):
     # TODO(majeski): Support for dummy/grouped results
     if result.has_unexpected_output:
       if result.output.HasCrashed():
@@ -124,9 +129,12 @@ class VerboseProgressIndicator(SimpleProgressIndicator):
         outcome = 'FAIL'
     else:
       outcome = 'pass'
+    return 'Done running %s %s: %s' % (
+      test, test.variant or 'default', outcome)
 
-    self._print('Done running %s %s: %s' % (
-      test, test.variant or 'default', outcome))
+  def _on_result_for(self, test, result):
+    super(VerboseProgressIndicator, self)._on_result_for(test, result)
+    self._print(self._message(test, result))
 
   # TODO(machenbach): Remove this platform specific hack and implement a proper
   # feedback channel from the workers, providing which tests are currently run.
@@ -153,6 +161,14 @@ class VerboseProgressIndicator(SimpleProgressIndicator):
   def _on_event(self, event):
     self._print(event)
     self._print_processes_linux()
+
+
+class CIProgressIndicator(VerboseProgressIndicator):
+  def _on_result_for(self, test, result):
+    super(VerboseProgressIndicator, self)._on_result_for(test, result)
+    if self.options.ci_test_completion:
+      with open(self.options.ci_test_completion, "a") as f:
+        f.write(self._message(test, result) + "\n")
 
 
 class DotsProgressIndicator(SimpleProgressIndicator):
@@ -284,45 +300,6 @@ class MonochromeProgressIndicator(CompactProgressIndicator):
 
   def _clear_line(self, last_length):
     print(("\r" + (" " * last_length) + "\r"), end='')
-
-
-class JUnitTestProgressIndicator(ProgressIndicator):
-  def __init__(self, junitout, junittestsuite):
-    super(JUnitTestProgressIndicator, self).__init__()
-    self._requirement = base.DROP_PASS_STDOUT
-
-    self.outputter = junit_output.JUnitTestOutput(junittestsuite)
-    if junitout:
-      self.outfile = open(junitout, "w")
-    else:
-      self.outfile = sys.stdout
-
-  def _on_result_for(self, test, result):
-    # TODO(majeski): Support for dummy/grouped results
-    fail_text = ""
-    output = result.output
-    if result.has_unexpected_output:
-      stdout = output.stdout.strip()
-      if len(stdout):
-        fail_text += "stdout:\n%s\n" % stdout
-      stderr = output.stderr.strip()
-      if len(stderr):
-        fail_text += "stderr:\n%s\n" % stderr
-      fail_text += "Command: %s" % result.cmd.to_string()
-      if output.HasCrashed():
-        fail_text += "exit code: %d\n--- CRASHED ---" % output.exit_code
-      if output.HasTimedOut():
-        fail_text += "--- TIMEOUT ---"
-    self.outputter.HasRunTest(
-        test_name=str(test),
-        test_cmd=result.cmd.to_string(relative=True),
-        test_duration=output.duration,
-        test_failure=fail_text)
-
-  def finished(self):
-    self.outputter.FinishAndWrite(self.outfile)
-    if self.outfile != sys.stdout:
-      self.outfile.close()
 
 
 class JsonTestProgressIndicator(ProgressIndicator):

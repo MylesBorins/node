@@ -46,8 +46,10 @@ DEFAULT_OUT_GN = 'out.gn'
 # Map of test name synonyms to lists of test suites. Should be ordered by
 # expected runtimes (suites with slow test cases first). These groups are
 # invoked in separate steps on the bots.
+# The mapping from names used here to GN targets (which must stay in sync)
+# is defined in infra/mb/gn_isolate_map.pyl.
 TEST_MAP = {
-  # This needs to stay in sync with test/bot_default.isolate.
+  # This needs to stay in sync with group("v8_bot_default") in test/BUILD.gn.
   "bot_default": [
     "debugger",
     "mjsunit",
@@ -62,8 +64,9 @@ TEST_MAP = {
     "preparser",
     "intl",
     "unittests",
+    "wasm-api-tests",
   ],
-  # This needs to stay in sync with test/default.isolate.
+  # This needs to stay in sync with group("v8_default") in test/BUILD.gn.
   "default": [
     "debugger",
     "mjsunit",
@@ -77,8 +80,9 @@ TEST_MAP = {
     "preparser",
     "intl",
     "unittests",
+    "wasm-api-tests",
   ],
-  # This needs to stay in sync with test/d8_default.isolate.
+  # This needs to stay in sync with group("v8_d8_default") in test/BUILD.gn.
   "d8_default": [
     "debugger",
     "mjsunit",
@@ -87,7 +91,7 @@ TEST_MAP = {
     "preparser",
     "intl",
   ],
-  # This needs to stay in sync with test/optimize_for_size.isolate.
+  # This needs to stay in sync with "v8_optimize_for_size" in test/BUILD.gn.
   "optimize_for_size": [
     "debugger",
     "mjsunit",
@@ -162,6 +166,7 @@ MODES = {
 
 PROGRESS_INDICATORS = {
   'verbose': progress.VerboseProgressIndicator,
+  'ci': progress.CIProgressIndicator,
   'dots': progress.DotsProgressIndicator,
   'color': progress.ColorProgressIndicator,
   'mono': progress.MonochromeProgressIndicator,
@@ -349,12 +354,13 @@ class BaseTestRunner(object):
                            "color, mono)")
     parser.add_option("--json-test-results",
                       help="Path to a file for storing json results.")
-    parser.add_option("--junitout", help="File name of the JUnit output")
-    parser.add_option("--junittestsuite", default="v8tests",
-                      help="The testsuite name in the JUnit output file")
     parser.add_option("--exit-after-n-failures", type="int", default=100,
                       help="Exit after the first N failures instead of "
                            "running all tests. Pass 0 to disable this feature.")
+    parser.add_option("--ci-test-completion",
+                      help="Path to a file for logging test completion in the "
+                           "context of CI progress indicator. Ignored if "
+                           "progress indicator is other than 'ci'.")
 
     # Rerun
     parser.add_option("--rerun-failures-count", default=0, type=int,
@@ -794,15 +800,15 @@ class BaseTestRunner(object):
 
   def _create_progress_indicators(self, test_count, options):
     procs = [PROGRESS_INDICATORS[options.progress]()]
-    if options.junitout:
-      procs.append(progress.JUnitTestProgressIndicator(options.junitout,
-                                                       options.junittestsuite))
     if options.json_test_results:
       procs.append(progress.JsonTestProgressIndicator(
         self.framework_name,
         options.json_test_results,
         self.build_config.arch,
         self.mode_options.execution_mode))
+
+    for proc in procs:
+      proc.configure(options)
 
     for proc in procs:
       try:

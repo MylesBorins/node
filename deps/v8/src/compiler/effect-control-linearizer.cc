@@ -187,8 +187,11 @@ class EffectControlLinearizer {
   Node* LowerMaybeGrowFastElements(Node* node, Node* frame_state);
   void LowerTransitionElementsKind(Node* node);
   Node* LowerLoadFieldByIndex(Node* node);
+  Node* LowerLoadMessage(Node* node);
   Node* LowerLoadTypedElement(Node* node);
   Node* LowerLoadDataViewElement(Node* node);
+  Node* LowerLoadStackArgument(Node* node);
+  void LowerStoreMessage(Node* node);
   void LowerStoreTypedElement(Node* node);
   void LowerStoreDataViewElement(Node* node);
   void LowerStoreSignedSmallElement(Node* node);
@@ -226,6 +229,8 @@ class EffectControlLinearizer {
   Node* ComputeUnseededHash(Node* value);
   Node* LowerStringComparison(Callable const& callable, Node* node);
   Node* IsElementsKindGreaterThan(Node* kind, ElementsKind reference_kind);
+
+  Node* BuildTypedArrayDataPointer(Node* base, Node* external);
 
   Node* ChangeInt32ToCompressedSmi(Node* value);
   Node* ChangeInt32ToSmi(Node* value);
@@ -1243,6 +1248,12 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
     case IrOpcode::kTransitionElementsKind:
       LowerTransitionElementsKind(node);
       break;
+    case IrOpcode::kLoadMessage:
+      result = LowerLoadMessage(node);
+      break;
+    case IrOpcode::kStoreMessage:
+      LowerStoreMessage(node);
+      break;
     case IrOpcode::kLoadFieldByIndex:
       result = LowerLoadFieldByIndex(node);
       break;
@@ -1251,6 +1262,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kLoadDataViewElement:
       result = LowerLoadDataViewElement(node);
+      break;
+    case IrOpcode::kLoadStackArgument:
+      result = LowerLoadStackArgument(node);
       break;
     case IrOpcode::kStoreTypedElement:
       LowerStoreTypedElement(node);
@@ -4746,6 +4760,20 @@ void EffectControlLinearizer::LowerTransitionElementsKind(Node* node) {
   __ Bind(&done);
 }
 
+Node* EffectControlLinearizer::LowerLoadMessage(Node* node) {
+  Node* offset = node->InputAt(0);
+  Node* object_pattern =
+      __ LoadField(AccessBuilder::ForExternalIntPtr(), offset);
+  return __ BitcastWordToTagged(object_pattern);
+}
+
+void EffectControlLinearizer::LowerStoreMessage(Node* node) {
+  Node* offset = node->InputAt(0);
+  Node* object = node->InputAt(1);
+  Node* object_pattern = __ BitcastTaggedToWord(object);
+  __ StoreField(AccessBuilder::ForExternalIntPtr(), offset, object_pattern);
+}
+
 Node* EffectControlLinearizer::LowerLoadFieldByIndex(Node* node) {
   Node* object = node->InputAt(0);
   Node* index = node->InputAt(1);
@@ -4801,6 +4829,7 @@ Node* EffectControlLinearizer::LowerLoadFieldByIndex(Node* node) {
   // architectures, or a mutable HeapNumber.
   __ Bind(&if_double);
   {
+    auto loaded_field = __ MakeLabel(MachineRepresentation::kTagged);
     auto done_double = __ MakeLabel(MachineRepresentation::kFloat64);
 
     index = __ WordSar(index, one);
@@ -4818,10 +4847,9 @@ Node* EffectControlLinearizer::LowerLoadFieldByIndex(Node* node) {
         Node* result = __ Load(MachineType::Float64(), object, offset);
         __ Goto(&done_double, result);
       } else {
-        Node* result =
+        Node* field =
             __ Load(MachineType::TypeCompressedTagged(), object, offset);
-        result = __ LoadField(AccessBuilder::ForHeapNumberValue(), result);
-        __ Goto(&done_double, result);
+        __ Goto(&loaded_field, field);
       }
     }
 
@@ -4834,10 +4862,25 @@ Node* EffectControlLinearizer::LowerLoadFieldByIndex(Node* node) {
                                __ IntPtrConstant(kTaggedSizeLog2)),
                     __ IntPtrConstant((FixedArray::kHeaderSize - kTaggedSize) -
                                       kHeapObjectTag));
-      Node* result =
+      Node* field =
           __ Load(MachineType::TypeCompressedTagged(), properties, offset);
-      result = __ LoadField(AccessBuilder::ForHeapNumberValue(), result);
-      __ Goto(&done_double, result);
+      __ Goto(&loaded_field, field);
+    }
+
+    __ Bind(&loaded_field);
+    {
+      Node* field = loaded_field.PhiAt(0);
+      // We may have transitioned in-place away from double, so check that
+      // this is a HeapNumber -- otherwise the load is fine and we don't need
+      // to copy anything anyway.
+      __ GotoIf(ObjectIsSmi(field), &done, field);
+      Node* field_map = __ LoadField(AccessBuilder::ForMap(), field);
+      __ GotoIfNot(
+          __ TaggedEqual(field_map, jsgraph()->HeapNumberMapConstant()), &done,
+          field);
+
+      Node* value = __ LoadField(AccessBuilder::ForHeapNumberValue(), field);
+      __ Goto(&done_double, value);
     }
 
     __ Bind(&done_double);
@@ -4988,6 +5031,35 @@ void EffectControlLinearizer::LowerStoreDataViewElement(Node* node) {
                     done.PhiAt(0));
 }
 
+// Compute the data pointer, handling the case where the {external} pointer
+// is the effective data pointer (i.e. the {base} is Smi zero).
+Node* EffectControlLinearizer::BuildTypedArrayDataPointer(Node* base,
+                                                          Node* external) {
+  if (IntPtrMatcher(base).Is(0)) {
+    return external;
+  } else {
+    if (COMPRESS_POINTERS_BOOL) {
+      // TurboFan does not support loading of compressed fields without
+      // decompression so we add the following operations to workaround that.
+      // We can't load the base value as word32 because in that case the
+      // value will not be marked as tagged in the pointer map and will not
+      // survive GC.
+      // Compress base value back to in order to be able to decompress by
+      // doing an unsafe add below. Both decompression and compression
+      // will be removed by the decompression elimination pass.
+      base = __ ChangeTaggedToCompressed(base);
+      base = __ BitcastTaggedToWord(base);
+      // Sign-extend Tagged_t to IntPtr according to current compression
+      // scheme so that the addition with |external_pointer| (which already
+      // contains compensated offset value) will decompress the tagged value.
+      // See JSTypedArray::ExternalPointerCompensationForOnHeapArray() for
+      // details.
+      base = ChangeInt32ToIntPtr(base);
+    }
+    return __ UnsafePointerAdd(base, external);
+  }
+}
+
 Node* EffectControlLinearizer::LowerLoadTypedElement(Node* node) {
   ExternalArrayType array_type = ExternalArrayTypeOf(node->op());
   Node* buffer = node->InputAt(0);
@@ -4999,17 +5071,22 @@ Node* EffectControlLinearizer::LowerLoadTypedElement(Node* node) {
   // ArrayBuffer (if there's any) as long as we are still operating on it.
   __ Retain(buffer);
 
-  // Compute the effective storage pointer, handling the case where the
-  // {external} pointer is the effective storage pointer (i.e. the {base}
-  // is Smi zero).
-  Node* storage = IntPtrMatcher(base).Is(0)
-                      ? external
-                      : __ UnsafePointerAdd(base, external);
+  Node* data_ptr = BuildTypedArrayDataPointer(base, external);
 
   // Perform the actual typed element access.
   return __ LoadElement(AccessBuilder::ForTypedArrayElement(
                             array_type, true, LoadSensitivity::kCritical),
-                        storage, index);
+                        data_ptr, index);
+}
+
+Node* EffectControlLinearizer::LowerLoadStackArgument(Node* node) {
+  Node* base = node->InputAt(0);
+  Node* index = node->InputAt(1);
+
+  Node* argument =
+      __ LoadElement(AccessBuilder::ForStackArgument(), base, index);
+
+  return __ BitcastWordToTagged(argument);
 }
 
 void EffectControlLinearizer::LowerStoreTypedElement(Node* node) {
@@ -5024,16 +5101,11 @@ void EffectControlLinearizer::LowerStoreTypedElement(Node* node) {
   // ArrayBuffer (if there's any) as long as we are still operating on it.
   __ Retain(buffer);
 
-  // Compute the effective storage pointer, handling the case where the
-  // {external} pointer is the effective storage pointer (i.e. the {base}
-  // is Smi zero).
-  Node* storage = IntPtrMatcher(base).Is(0)
-                      ? external
-                      : __ UnsafePointerAdd(base, external);
+  Node* data_ptr = BuildTypedArrayDataPointer(base, external);
 
   // Perform the actual typed element access.
   __ StoreElement(AccessBuilder::ForTypedArrayElement(array_type, true),
-                  storage, index, value);
+                  data_ptr, index, value);
 }
 
 void EffectControlLinearizer::TransitionElementsTo(Node* node, Node* array,

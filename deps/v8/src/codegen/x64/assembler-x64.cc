@@ -327,8 +327,9 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
     Address pc = reinterpret_cast<Address>(buffer_start_) + request.offset();
     switch (request.kind()) {
       case HeapObjectRequest::kHeapNumber: {
-        Handle<HeapNumber> object = isolate->factory()->NewHeapNumber(
-            request.heap_number(), AllocationType::kOld);
+        Handle<HeapNumber> object =
+            isolate->factory()->NewHeapNumber<AllocationType::kOld>(
+                request.heap_number());
         WriteUnalignedValue(pc, object);
         break;
       }
@@ -1775,6 +1776,13 @@ void Assembler::emit_mov(Register dst, Immediate64 value, int size) {
     emit(0xB8 | dst.low_bits());
     emit(value);
   }
+}
+
+void Assembler::movq_imm64(Register dst, int64_t value) {
+  EnsureSpace ensure_space(this);
+  emit_rex(dst, kInt64Size);
+  emit(0xB8 | dst.low_bits());
+  emitq(static_cast<uint64_t>(value));
 }
 
 void Assembler::movq_heap_number(Register dst, double value) {
@@ -4095,6 +4103,42 @@ void Assembler::vfmass(byte op, XMMRegister dst, XMMRegister src1,
   DCHECK(IsEnabled(FMA3));
   EnsureSpace ensure_space(this);
   emit_vex_prefix(dst, src1, src2, kLIG, k66, k0F38, kW0);
+  emit(op);
+  emit_sse_operand(dst, src2);
+}
+
+void Assembler::vfmaps(byte op, XMMRegister dst, XMMRegister src1,
+                       XMMRegister src2) {
+  DCHECK(IsEnabled(FMA3));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, src1, src2, kL128, k66, k0F38, kW0);
+  emit(op);
+  emit_sse_operand(dst, src2);
+}
+
+void Assembler::vfmaps(byte op, XMMRegister dst, XMMRegister src1,
+                       Operand src2) {
+  DCHECK(IsEnabled(FMA3));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, src1, src2, kL128, k66, k0F38, kW0);
+  emit(op);
+  emit_sse_operand(dst, src2);
+}
+
+void Assembler::vfmapd(byte op, XMMRegister dst, XMMRegister src1,
+                       XMMRegister src2) {
+  DCHECK(IsEnabled(FMA3));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, src1, src2, kL128, k66, k0F38, kW1);
+  emit(op);
+  emit_sse_operand(dst, src2);
+}
+
+void Assembler::vfmapd(byte op, XMMRegister dst, XMMRegister src1,
+                       Operand src2) {
+  DCHECK(IsEnabled(FMA3));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, src1, src2, kL128, k66, k0F38, kW1);
   emit(op);
   emit_sse_operand(dst, src2);
 }

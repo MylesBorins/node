@@ -24,6 +24,10 @@ namespace {
 using ScopeSloppyEvalCanExtendVarsField = BitField8<bool, 0, 1>;
 using InnerScopeCallsEvalField =
     ScopeSloppyEvalCanExtendVarsField::Next<bool, 1>;
+using NeedsPrivateNameContextChainRecalcField =
+    InnerScopeCallsEvalField::Next<bool, 1>;
+using CanElideThisHoleChecks =
+    NeedsPrivateNameContextChainRecalcField::Next<bool, 1>;
 
 using VariableMaybeAssignedField = BitField8<bool, 0, 1>;
 using VariableContextAllocatedField = VariableMaybeAssignedField::Next<bool, 1>;
@@ -322,7 +326,7 @@ void PreparseDataBuilder::SaveScopeAllocationData(DeclarationScope* scope,
     if (SaveDataForSkippableFunction(builder)) num_inner_with_data_++;
   }
 
-  // Don't save imcoplete scope information when bailed out.
+  // Don't save incomplete scope information when bailed out.
   if (!bailed_out_) {
 #ifdef DEBUG
   // function data items, kSkippableMinFunctionDataSize each.
@@ -352,13 +356,20 @@ void PreparseDataBuilder::SaveDataForScope(Scope* scope) {
   byte_data_.WriteUint8(scope->scope_type());
 #endif
 
-  uint8_t eval =
+  uint8_t scope_data_flags =
       ScopeSloppyEvalCanExtendVarsField::encode(
           scope->is_declaration_scope() &&
           scope->AsDeclarationScope()->sloppy_eval_can_extend_vars()) |
-      InnerScopeCallsEvalField::encode(scope->inner_scope_calls_eval());
+      InnerScopeCallsEvalField::encode(scope->inner_scope_calls_eval()) |
+      NeedsPrivateNameContextChainRecalcField::encode(
+          scope->is_function_scope() &&
+          scope->AsDeclarationScope()
+              ->needs_private_name_context_chain_recalc()) |
+      CanElideThisHoleChecks::encode(
+          scope->is_declaration_scope() &&
+          scope->AsDeclarationScope()->can_elide_this_hole_checks());
   byte_data_.Reserve(kUint8Size);
-  byte_data_.WriteUint8(eval);
+  byte_data_.WriteUint8(scope_data_flags);
 
   if (scope->is_function_scope()) {
     Variable* function = scope->AsDeclarationScope()->function_var();
@@ -599,9 +610,19 @@ void BaseConsumedPreparseData<Data>::RestoreDataForScope(Scope* scope) {
   DCHECK_EQ(scope_data_->ReadUint8(), scope->scope_type());
 
   CHECK(scope_data_->HasRemainingBytes(ByteData::kUint8Size));
-  uint32_t eval = scope_data_->ReadUint8();
-  if (ScopeSloppyEvalCanExtendVarsField::decode(eval)) scope->RecordEvalCall();
-  if (InnerScopeCallsEvalField::decode(eval)) scope->RecordInnerScopeEvalCall();
+  uint32_t scope_data_flags = scope_data_->ReadUint8();
+  if (ScopeSloppyEvalCanExtendVarsField::decode(scope_data_flags)) {
+    scope->RecordEvalCall();
+  }
+  if (InnerScopeCallsEvalField::decode(scope_data_flags)) {
+    scope->RecordInnerScopeEvalCall();
+  }
+  if (NeedsPrivateNameContextChainRecalcField::decode(scope_data_flags)) {
+    scope->AsDeclarationScope()->RecordNeedsPrivateNameContextChainRecalc();
+  }
+  if (CanElideThisHoleChecks::decode(scope_data_flags)) {
+    scope->AsDeclarationScope()->set_can_elide_this_hole_checks();
+  }
 
   if (scope->is_function_scope()) {
     Variable* function = scope->AsDeclarationScope()->function_var();
@@ -731,13 +752,13 @@ ProducedPreparseData* ZoneConsumedPreparseData::GetChildData(Zone* zone,
 std::unique_ptr<ConsumedPreparseData> ConsumedPreparseData::For(
     Isolate* isolate, Handle<PreparseData> data) {
   DCHECK(!data.is_null());
-  return base::make_unique<OnHeapConsumedPreparseData>(isolate, data);
+  return std::make_unique<OnHeapConsumedPreparseData>(isolate, data);
 }
 
 std::unique_ptr<ConsumedPreparseData> ConsumedPreparseData::For(
     Zone* zone, ZonePreparseData* data) {
   if (data == nullptr) return {};
-  return base::make_unique<ZoneConsumedPreparseData>(zone, data);
+  return std::make_unique<ZoneConsumedPreparseData>(zone, data);
 }
 
 }  // namespace internal

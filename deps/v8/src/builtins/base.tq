@@ -232,6 +232,10 @@ extern class WeakFixedArray extends HeapObject { length: Smi; }
 
 extern class ByteArray extends FixedArrayBase {}
 
+@hasSameInstanceTypeAsParent
+extern class ArrayList extends FixedArray {
+}
+
 type LayoutDescriptor extends ByteArray
     generates 'TNode<LayoutDescriptor>';
 type TransitionArray extends WeakFixedArray
@@ -569,9 +573,12 @@ extern class SourceTextModule extends Module {
   // Lazily initialized on first access. It's the hole before first access and
   // a JSObject afterwards.
   import_meta: TheHole | JSObject;
-
+  async_parent_modules: ArrayList;
+  top_level_capability: JSPromise | Undefined;
   dfs_index: Smi;
   dfs_ancestor_index: Smi;
+  pending_async_dependencies: Smi;
+  flags: Smi;
 }
 
 @generateCppClass
@@ -656,7 +663,7 @@ extern class Script extends Struct {
   line_ends: Object;
   id: Smi;
   eval_from_shared_or_wrapped_arguments: Object;
-  eval_from_position: Smi;
+  eval_from_position: Smi | Foreign;  // Smi or Managed<wasm::NativeModule>
   shared_function_infos: Object;
   flags: Smi;
   source_url: Object;
@@ -697,13 +704,30 @@ extern class SharedFunctionInfo extends HeapObject {
   @if(V8_SFI_HAS_UNIQUE_ID) unique_id: int32;
 }
 
+@abstract
+@generateCppClass
+extern class UncompiledData extends HeapObject {
+  inferred_name: String;
+  start_position: int32;
+  end_position: int32;
+}
+
+@generateCppClass
+extern class UncompiledDataWithoutPreparseData extends UncompiledData {
+}
+
+@generateCppClass
+extern class UncompiledDataWithPreparseData extends UncompiledData {
+  preparse_data: PreparseData;
+}
+
 @generateCppClass
 extern class JSBoundFunction extends JSObject {
   // The wrapped function object.
   bound_target_function: Callable;
   // The value that is always passed as the this value when calling the wrapped
   // function.
-  bound_this: JSAny;
+  bound_this: JSAny | SourceTextModule;
   // A list of values whose elements are used as the first arguments to any call
   // to the wrapped function.
   bound_arguments: FixedArray;
@@ -1129,6 +1153,7 @@ extern class WasmIndirectFunctionTable extends Struct {
 extern class WasmDebugInfo extends Struct {
   instance: WasmInstanceObject;
   interpreter_handle: Foreign | Undefined;
+  interpreter_reference_stack: Cell;
   locals_names: FixedArray | Undefined;
   c_wasm_entries: FixedArray | Undefined;
   c_wasm_entry_map: Foreign | Undefined;  // Managed<wasm::SignatureMap>
@@ -1305,9 +1330,6 @@ const kStrictReadOnlyProperty: constexpr MessageTemplate
 const kString: constexpr PrimitiveType
     generates 'PrimitiveType::kString';
 
-const kExternalPointerForOnHeapArray: constexpr RawPtr
-    generates 'JSTypedArray::ExternalPointerForOnHeapArray()';
-
 const kNameDictionaryInitialCapacity:
     constexpr int32 generates 'NameDictionary::kInitialCapacity';
 
@@ -1443,10 +1465,25 @@ RegExpBuiltinsAssembler::FastStoreLastIndex(FastJSRegExp, Smi): void;
 
 @hasSameInstanceTypeAsParent
 extern class JSRegExpResult extends JSArray {
+  // In-object properties:
+  // The below fields are externally exposed.
   index: JSAny;
   input: JSAny;
   groups: JSAny;
+
+  // The below fields are for internal use only.
+  cached_indices_or_match_info: JSRegExpResultIndices | RegExpMatchInfo;
+  names: FixedArray | Undefined;
 }
+
+@hasSameInstanceTypeAsParent
+extern class JSRegExpResultIndices extends JSArray {
+  // In-object properties:
+  // The groups field is externally exposed.
+  groups: JSAny;
+}
+
+transient type FastJSRegExpResult extends JSRegExpResult;
 
 @generateCppClass
 extern class JSRegExpStringIterator extends JSObject {
@@ -1657,6 +1694,8 @@ extern transitioning builtin HasProperty(implicit context: Context)(
 extern transitioning macro HasProperty_Inline(implicit context: Context)(
     JSReceiver, JSAny): Boolean;
 extern builtin LoadIC(Context, JSAny, JSAny, Smi, FeedbackVector): JSAny;
+extern macro CollectCallFeedback(
+    JSAny, Context, Undefined | FeedbackVector, uintptr);
 
 extern macro ThrowRangeError(implicit context: Context)(
     constexpr MessageTemplate): never;
@@ -1674,6 +1713,10 @@ extern macro ThrowTypeError(implicit context: Context)(
     constexpr MessageTemplate, Object, Object, Object): never;
 extern transitioning runtime ThrowTypeErrorIfStrict(implicit context: Context)(
     Smi, Object, Object): void;
+extern transitioning runtime ThrowCalledNonCallable(implicit context: Context)(
+    JSAny): never;
+extern transitioning runtime ThrowSymbolIteratorInvalid(
+    implicit context: Context)(): never;
 
 extern transitioning macro ThrowIfNotJSReceiver(implicit context: Context)(
     JSAny, constexpr MessageTemplate, constexpr string): void;
@@ -2354,9 +2397,22 @@ Cast<JSRegExp>(o: HeapObject): JSRegExp
   goto CastError;
 }
 
+Cast<FastJSRegExpResult>(implicit context: Context)(o: HeapObject):
+    FastJSRegExpResult
+    labels CastError {
+  if (regexp::IsFastRegExpResult(o)) return %RawDownCast<FastJSRegExpResult>(o);
+  goto CastError;
+}
+
 Cast<Map>(implicit context: Context)(o: HeapObject): Map
     labels CastError {
   if (IsMap(o)) return %RawDownCast<Map>(o);
+  goto CastError;
+}
+
+Cast<FeedbackVector>(implicit context: Context)(o: HeapObject): FeedbackVector
+    labels CastError {
+  if (IsFeedbackVector(o)) return %RawDownCast<FeedbackVector>(o);
   goto CastError;
 }
 
@@ -2513,6 +2569,7 @@ extern macro Signed(RawPtr): intptr;
 extern macro TruncateIntPtrToInt32(intptr): int32;
 extern macro SmiTag(intptr): Smi;
 extern macro SmiFromInt32(int32): Smi;
+extern macro SmiFromUint32(uint32): Smi;
 extern macro SmiUntag(Smi): intptr;
 extern macro SmiToInt32(Smi): int32;
 extern macro RoundIntPtrToFloat64(intptr): float64;
@@ -2674,7 +2731,7 @@ Convert<Number, uint32>(ui: uint32): Number {
   return ChangeUint32ToTagged(ui);
 }
 Convert<Smi, uint32>(ui: uint32): Smi {
-  return SmiFromInt32(Signed(ui));
+  return SmiFromUint32(ui);
 }
 Convert<uintptr, uint32>(ui: uint32): uintptr {
   return ChangeUint32ToWord(ui);
@@ -2811,8 +2868,7 @@ extern macro IsMockArrayBufferAllocatorFlag(): bool;
 extern macro IsPrototypeTypedArrayPrototype(implicit context: Context)(Map):
     bool;
 
-extern operator '.data_ptr' macro LoadJSTypedArrayBackingStore(JSTypedArray):
-    RawPtr;
+extern operator '.data_ptr' macro LoadJSTypedArrayDataPtr(JSTypedArray): RawPtr;
 
 extern operator '.elements_kind' macro LoadMapElementsKind(Map): ElementsKind;
 extern operator '.elements_kind' macro LoadElementsKind(JSTypedArray):
@@ -3255,6 +3311,7 @@ extern macro PerformStackCheck(implicit context: Context)(): void;
 
 extern macro IsCallable(HeapObject): bool;
 extern macro IsConstructor(HeapObject): bool;
+extern macro IsFeedbackVector(HeapObject): bool;
 extern macro IsJSArray(HeapObject): bool;
 extern macro IsJSProxy(HeapObject): bool;
 extern macro IsJSRegExp(HeapObject): bool;

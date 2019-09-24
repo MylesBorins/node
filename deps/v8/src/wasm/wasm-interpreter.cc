@@ -1128,13 +1128,41 @@ class ThreadImpl {
   };
 
  public:
+  // The {ReferenceStackScope} sets up the reference stack in the interpreter.
+  // The handle to the reference stack has to be re-initialized everytime we
+  // call into the interpreter because there is no HandleScope that could
+  // contain that handle. A global handle is not an option because it can lead
+  // to a memory leak if a reference to the {WasmInstanceObject} is put onto the
+  // reference stack and thereby transitively keeps the interpreter alive.
+  class ReferenceStackScope {
+   public:
+    explicit ReferenceStackScope(ThreadImpl* impl) : impl_(impl) {
+      // The reference stack is already initialized, we don't have to do
+      // anything.
+      if (!impl_->reference_stack_cell_.is_null()) return;
+      impl_->reference_stack_cell_ = handle(
+          impl_->instance_object_->debug_info().interpreter_reference_stack(),
+          impl_->isolate_);
+      // We initialized the reference stack, so we also have to reset it later.
+      do_reset_stack_ = true;
+    }
+
+    ~ReferenceStackScope() {
+      if (do_reset_stack_) {
+        impl_->reference_stack_cell_ = Handle<Cell>();
+      }
+    }
+
+   private:
+    ThreadImpl* impl_;
+    bool do_reset_stack_ = false;
+  };
+
   ThreadImpl(Zone* zone, CodeMap* codemap,
-             Handle<WasmInstanceObject> instance_object,
-             Handle<Cell> reference_stack_cell)
+             Handle<WasmInstanceObject> instance_object)
       : codemap_(codemap),
         isolate_(instance_object->GetIsolate()),
         instance_object_(instance_object),
-        reference_stack_cell_(reference_stack_cell),
         frames_(zone),
         activations_(zone) {}
 
@@ -1394,6 +1422,7 @@ class ThreadImpl {
   };
 
   friend class InterpretedFrameImpl;
+  friend class ReferenceStackScope;
 
   CodeMap* codemap_;
   Isolate* isolate_;
@@ -1663,9 +1692,15 @@ class ThreadImpl {
 
   template <typename ctype, typename mtype>
   bool ExecuteLoad(Decoder* decoder, InterpreterCode* code, pc_t pc,
-                   int* const len, MachineRepresentation rep) {
-    MemoryAccessImmediate<Decoder::kNoValidate> imm(decoder, code->at(pc),
-                                                    sizeof(ctype));
+                   int* const len, MachineRepresentation rep,
+                   int prefix_len = 0) {
+    // Some opcodes have a prefix byte, and MemoryAccessImmediate assumes that
+    // the memarg is 1 byte from pc. We don't increment pc at the caller,
+    // because we want to keep pc to the start of the operation to keep trap
+    // reporting and tracing accurate, otherwise those will report at the middle
+    // of an opcode.
+    MemoryAccessImmediate<Decoder::kNoValidate> imm(
+        decoder, code->at(pc + prefix_len), sizeof(ctype));
     uint32_t index = Pop().to<uint32_t>();
     Address addr = BoundsCheckMem<mtype>(imm.offset, index);
     if (!addr) {
@@ -1690,9 +1725,15 @@ class ThreadImpl {
 
   template <typename ctype, typename mtype>
   bool ExecuteStore(Decoder* decoder, InterpreterCode* code, pc_t pc,
-                    int* const len, MachineRepresentation rep) {
-    MemoryAccessImmediate<Decoder::kNoValidate> imm(decoder, code->at(pc),
-                                                    sizeof(ctype));
+                    int* const len, MachineRepresentation rep,
+                    int prefix_len = 0) {
+    // Some opcodes have a prefix byte, and MemoryAccessImmediate assumes that
+    // the memarg is 1 byte from pc. We don't increment pc at the caller,
+    // because we want to keep pc to the start of the operation to keep trap
+    // reporting and tracing accurate, otherwise those will report at the middle
+    // of an opcode.
+    MemoryAccessImmediate<Decoder::kNoValidate> imm(
+        decoder, code->at(pc + prefix_len), sizeof(ctype));
     ctype val = Pop().to<ctype>();
 
     uint32_t index = Pop().to<uint32_t>();
@@ -2317,8 +2358,10 @@ class ThreadImpl {
   }
       UNOP_CASE(F64x2Abs, f64x2, float2, 2, std::abs(a))
       UNOP_CASE(F64x2Neg, f64x2, float2, 2, -a)
+      UNOP_CASE(F64x2Sqrt, f64x2, float2, 2, std::sqrt(a))
       UNOP_CASE(F32x4Abs, f32x4, float4, 4, std::abs(a))
       UNOP_CASE(F32x4Neg, f32x4, float4, 4, -a)
+      UNOP_CASE(F32x4Sqrt, f32x4, float4, 4, std::sqrt(a))
       UNOP_CASE(F32x4RecipApprox, f32x4, float4, 4, base::Recip(a))
       UNOP_CASE(F32x4RecipSqrtApprox, f32x4, float4, 4, base::RecipSqrt(a))
       UNOP_CASE(I64x2Neg, i64x2, int2, 2, base::NegateWithWraparound(a))
@@ -2431,10 +2474,12 @@ class ThreadImpl {
 #undef REPLACE_LANE_CASE
       case kExprS128LoadMem:
         return ExecuteLoad<Simd128, Simd128>(decoder, code, pc, len,
-                                             MachineRepresentation::kSimd128);
+                                             MachineRepresentation::kSimd128,
+                                             /*prefix_len=*/1);
       case kExprS128StoreMem:
         return ExecuteStore<Simd128, Simd128>(decoder, code, pc, len,
-                                              MachineRepresentation::kSimd128);
+                                              MachineRepresentation::kSimd128,
+                                              /*prefix_len=*/1);
 #define SHIFT_CASE(op, name, stype, count, expr) \
   case kExpr##op: {                              \
     uint32_t shift = Pop().to<uint32_t>();       \
@@ -2448,19 +2493,26 @@ class ThreadImpl {
     Push(WasmValue(Simd128(res)));               \
     return true;                                 \
   }
-        SHIFT_CASE(I64x2Shl, i64x2, int2, 2, static_cast<uint64_t>(a) << shift)
-        SHIFT_CASE(I64x2ShrS, i64x2, int2, 2, a >> shift)
-        SHIFT_CASE(I64x2ShrU, i64x2, int2, 2, static_cast<uint64_t>(a) >> shift)
-        SHIFT_CASE(I32x4Shl, i32x4, int4, 4, static_cast<uint32_t>(a) << shift)
-        SHIFT_CASE(I32x4ShrS, i32x4, int4, 4, a >> shift)
-        SHIFT_CASE(I32x4ShrU, i32x4, int4, 4, static_cast<uint32_t>(a) >> shift)
-        SHIFT_CASE(I16x8Shl, i16x8, int8, 8, static_cast<uint16_t>(a) << shift)
-        SHIFT_CASE(I16x8ShrS, i16x8, int8, 8, a >> shift)
-        SHIFT_CASE(I16x8ShrU, i16x8, int8, 8, static_cast<uint16_t>(a) >> shift)
-        SHIFT_CASE(I8x16Shl, i8x16, int16, 16, static_cast<uint8_t>(a) << shift)
-        SHIFT_CASE(I8x16ShrS, i8x16, int16, 16, a >> shift)
+        SHIFT_CASE(I64x2Shl, i64x2, int2, 2,
+                   static_cast<uint64_t>(a) << (shift % 64))
+        SHIFT_CASE(I64x2ShrS, i64x2, int2, 2, a >> (shift % 64))
+        SHIFT_CASE(I64x2ShrU, i64x2, int2, 2,
+                   static_cast<uint64_t>(a) >> (shift % 64))
+        SHIFT_CASE(I32x4Shl, i32x4, int4, 4,
+                   static_cast<uint32_t>(a) << (shift % 32))
+        SHIFT_CASE(I32x4ShrS, i32x4, int4, 4, a >> (shift % 32))
+        SHIFT_CASE(I32x4ShrU, i32x4, int4, 4,
+                   static_cast<uint32_t>(a) >> (shift % 32))
+        SHIFT_CASE(I16x8Shl, i16x8, int8, 8,
+                   static_cast<uint16_t>(a) << (shift % 16))
+        SHIFT_CASE(I16x8ShrS, i16x8, int8, 8, a >> (shift % 16))
+        SHIFT_CASE(I16x8ShrU, i16x8, int8, 8,
+                   static_cast<uint16_t>(a) >> (shift % 16))
+        SHIFT_CASE(I8x16Shl, i8x16, int16, 16,
+                   static_cast<uint8_t>(a) << (shift % 8))
+        SHIFT_CASE(I8x16ShrS, i8x16, int16, 16, a >> (shift % 8))
         SHIFT_CASE(I8x16ShrU, i8x16, int16, 16,
-                   static_cast<uint8_t>(a) >> shift)
+                   static_cast<uint8_t>(a) >> (shift % 8))
 #undef SHIFT_CASE
 #define CONVERT_CASE(op, src_type, name, dst_type, count, start_index, ctype, \
                      expr)                                                    \
@@ -2604,6 +2656,23 @@ class ThreadImpl {
         REDUCTION_CASE(S1x8AllTrue, i16x8, int8, 8, &)
         REDUCTION_CASE(S1x16AllTrue, i8x16, int16, 16, &)
 #undef REDUCTION_CASE
+#define QFM_CASE(op, name, stype, count, operation)         \
+  case kExpr##op: {                                         \
+    stype c = Pop().to_s128().to_##name();                  \
+    stype b = Pop().to_s128().to_##name();                  \
+    stype a = Pop().to_s128().to_##name();                  \
+    stype res;                                              \
+    for (size_t i = 0; i < count; i++) {                    \
+      res.val[i] = a.val[i] operation(b.val[i] * c.val[i]); \
+    }                                                       \
+    Push(WasmValue(Simd128(res)));                          \
+    return true;                                            \
+  }
+        QFM_CASE(F32x4Qfma, f32x4, float4, 4, +)
+        QFM_CASE(F32x4Qfms, f32x4, float4, 4, -)
+        QFM_CASE(F64x2Qfma, f64x2, float2, 2, +)
+        QFM_CASE(F64x2Qfms, f64x2, float2, 2, -)
+#undef QFM_CASE
       default:
         return false;
     }
@@ -3770,7 +3839,8 @@ class ThreadImpl {
   static WasmCode* GetTargetCode(Isolate* isolate, Address target) {
     WasmCodeManager* code_manager = isolate->wasm_engine()->code_manager();
     NativeModule* native_module = code_manager->LookupNativeModule(target);
-    if (native_module->is_jump_table_slot(target)) {
+    WasmCode* code = native_module->Lookup(target);
+    if (code->kind() == WasmCode::kJumpTable) {
       uint32_t func_index =
           native_module->GetFunctionIndexFromJumpTableSlot(target);
 
@@ -3784,7 +3854,6 @@ class ThreadImpl {
 
       return native_module->GetCode(func_index);
     }
-    WasmCode* code = native_module->Lookup(target);
     DCHECK_EQ(code->instruction_start(), target);
     return code;
   }
@@ -3888,12 +3957,14 @@ class InterpretedFrameImpl {
   }
 
   WasmValue GetLocalValue(int index) const {
+    ThreadImpl::ReferenceStackScope stack_scope(thread_);
     DCHECK_LE(0, index);
     DCHECK_GT(GetLocalCount(), index);
     return thread_->GetStackValue(static_cast<int>(frame()->sp) + index);
   }
 
   WasmValue GetStackValue(int index) const {
+    ThreadImpl::ReferenceStackScope stack_scope(thread_);
     DCHECK_LE(0, index);
     // Index must be within the number of stack values of this frame.
     DCHECK_GT(GetStackHeight(), index);
@@ -3941,21 +4012,33 @@ const InterpretedFrameImpl* ToImpl(const InterpretedFrame* frame) {
 // translation unit anyway.
 //============================================================================
 WasmInterpreter::State WasmInterpreter::Thread::state() {
-  return ToImpl(this)->state();
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  return impl->state();
 }
 void WasmInterpreter::Thread::InitFrame(const WasmFunction* function,
                                         WasmValue* args) {
-  ToImpl(this)->InitFrame(function, args);
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  impl->InitFrame(function, args);
 }
 WasmInterpreter::State WasmInterpreter::Thread::Run(int num_steps) {
-  return ToImpl(this)->Run(num_steps);
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  return impl->Run(num_steps);
 }
 void WasmInterpreter::Thread::Pause() { return ToImpl(this)->Pause(); }
-void WasmInterpreter::Thread::Reset() { return ToImpl(this)->Reset(); }
+void WasmInterpreter::Thread::Reset() {
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  return impl->Reset();
+}
 WasmInterpreter::Thread::ExceptionHandlingResult
 WasmInterpreter::Thread::RaiseException(Isolate* isolate,
                                         Handle<Object> exception) {
-  return ToImpl(this)->RaiseException(isolate, exception);
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  return impl->RaiseException(isolate, exception);
 }
 pc_t WasmInterpreter::Thread::GetBreakpointPc() {
   return ToImpl(this)->GetBreakpointPc();
@@ -3969,7 +4052,9 @@ WasmInterpreter::FramePtr WasmInterpreter::Thread::GetFrame(int index) {
   return FramePtr(ToFrame(new InterpretedFrameImpl(ToImpl(this), index)));
 }
 WasmValue WasmInterpreter::Thread::GetReturnValue(int index) {
-  return ToImpl(this)->GetReturnValue(index);
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  return impl->GetReturnValue(index);
 }
 TrapReason WasmInterpreter::Thread::GetTrapReason() {
   return ToImpl(this)->GetTrapReason();
@@ -3996,41 +4081,38 @@ uint32_t WasmInterpreter::Thread::NumActivations() {
   return ToImpl(this)->NumActivations();
 }
 uint32_t WasmInterpreter::Thread::StartActivation() {
-  return ToImpl(this)->StartActivation();
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  return impl->StartActivation();
 }
 void WasmInterpreter::Thread::FinishActivation(uint32_t id) {
-  ToImpl(this)->FinishActivation(id);
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  impl->FinishActivation(id);
 }
 uint32_t WasmInterpreter::Thread::ActivationFrameBase(uint32_t id) {
-  return ToImpl(this)->ActivationFrameBase(id);
+  ThreadImpl* impl = ToImpl(this);
+  ThreadImpl::ReferenceStackScope stack_scope(impl);
+  return impl->ActivationFrameBase(id);
 }
 
 //============================================================================
 // The implementation details of the interpreter.
 //============================================================================
-class WasmInterpreterInternals : public ZoneObject {
+class WasmInterpreterInternals {
  public:
   // Create a copy of the module bytes for the interpreter, since the passed
   // pointer might be invalidated after constructing the interpreter.
   const ZoneVector<uint8_t> module_bytes_;
   CodeMap codemap_;
-  ZoneVector<ThreadImpl> threads_;
+  std::vector<ThreadImpl> threads_;
 
   WasmInterpreterInternals(Zone* zone, const WasmModule* module,
                            const ModuleWireBytes& wire_bytes,
                            Handle<WasmInstanceObject> instance_object)
       : module_bytes_(wire_bytes.start(), wire_bytes.end(), zone),
-        codemap_(module, module_bytes_.data(), zone),
-        threads_(zone) {
-    Isolate* isolate = instance_object->GetIsolate();
-    Handle<Cell> reference_stack = isolate->global_handles()->Create(
-        *isolate->factory()->NewCell(isolate->factory()->empty_fixed_array()));
-    threads_.emplace_back(zone, &codemap_, instance_object, reference_stack);
-  }
-
-  ~WasmInterpreterInternals() {
-    DCHECK_EQ(1, threads_.size());
-    GlobalHandles::Destroy(threads_[0].reference_stack_cell().location());
+        codemap_(module, module_bytes_.data(), zone) {
+    threads_.emplace_back(zone, &codemap_, instance_object);
   }
 };
 
@@ -4059,10 +4141,12 @@ WasmInterpreter::WasmInterpreter(Isolate* isolate, const WasmModule* module,
                                  const ModuleWireBytes& wire_bytes,
                                  Handle<WasmInstanceObject> instance_object)
     : zone_(isolate->allocator(), ZONE_NAME),
-      internals_(new (&zone_) WasmInterpreterInternals(
+      internals_(new WasmInterpreterInternals(
           &zone_, module, wire_bytes, MakeWeak(isolate, instance_object))) {}
 
-WasmInterpreter::~WasmInterpreter() { internals_->~WasmInterpreterInternals(); }
+// The destructor is here so we can forward declare {WasmInterpreterInternals}
+// used in the {unique_ptr} in the header.
+WasmInterpreter::~WasmInterpreter() {}
 
 void WasmInterpreter::Run() { internals_->threads_[0].Run(); }
 

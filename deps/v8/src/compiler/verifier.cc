@@ -1594,12 +1594,14 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
       CheckTypeIs(node, Type::NonInternal());
       break;
     case IrOpcode::kLoadField:
+    case IrOpcode::kLoadMessage:
       // Object -> fieldtype
       // TODO(rossberg): activate once machine ops are typed.
       // CheckValueInputIs(node, 0, Type::Object());
       // CheckTypeIs(node, FieldAccessOf(node->op()).type));
       break;
     case IrOpcode::kLoadElement:
+    case IrOpcode::kLoadStackArgument:
       // Object -> elementtype
       // TODO(rossberg): activate once machine ops are typed.
       // CheckValueInputIs(node, 0, Type::Object());
@@ -1613,6 +1615,7 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
     case IrOpcode::kLoadDataViewElement:
       break;
     case IrOpcode::kStoreField:
+    case IrOpcode::kStoreMessage:
       // (Object, fieldtype) -> _|_
       // TODO(rossberg): activate once machine ops are typed.
       // CheckValueInputIs(node, 0, Type::Object());
@@ -1700,6 +1703,7 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
     case IrOpcode::kWord64Ctz:
     case IrOpcode::kWord64ReverseBits:
     case IrOpcode::kWord64ReverseBytes:
+    case IrOpcode::kSimd128ReverseBytes:
     case IrOpcode::kInt64AbsWithOverflow:
     case IrOpcode::kWord64Equal:
     case IrOpcode::kInt32Add:
@@ -1801,7 +1805,7 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
     case IrOpcode::kBitcastInt32ToFloat32:
     case IrOpcode::kBitcastInt64ToFloat64:
     case IrOpcode::kBitcastTaggedToWord:
-    case IrOpcode::kBitcastTaggedSignedToWord:
+    case IrOpcode::kBitcastTaggedToWordForTagAndSmiBits:
     case IrOpcode::kBitcastWordToTagged:
     case IrOpcode::kBitcastWordToTaggedSigned:
     case IrOpcode::kBitcastWord32ToCompressedSigned:

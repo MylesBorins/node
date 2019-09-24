@@ -53,6 +53,9 @@ class ScopeInfo : public FixedArray {
   // Does this scope make a sloppy eval call?
   bool SloppyEvalCanExtendVars() const;
 
+  // True if we can elide 'this' hole checks in this scope.
+  bool CanElideThisHoleChecks() const;
+
   // Return the number of context slots for code if a context is allocated. This
   // number consists of three parts:
   //  1. Size of fixed header for every context: Context::MIN_CONTEXT_SLOTS
@@ -121,6 +124,9 @@ class ScopeInfo : public FixedArray {
   // Return the mode of the given context local.
   VariableMode ContextLocalMode(int var) const;
 
+  // Return whether the given context local variable is static.
+  IsStaticFlag ContextLocalIsStaticFlag(int var) const;
+
   // Return the initialization flag of the given context local.
   InitializationFlag ContextLocalInitFlag(int var) const;
 
@@ -141,7 +147,8 @@ class ScopeInfo : public FixedArray {
   // mode for that variable.
   static int ContextSlotIndex(ScopeInfo scope_info, String name,
                               VariableMode* mode, InitializationFlag* init_flag,
-                              MaybeAssignedFlag* maybe_assigned_flag);
+                              MaybeAssignedFlag* maybe_assigned_flag,
+                              IsStaticFlag* is_static_flag);
 
   // Lookup metadata of a MODULE-allocated variable.  Return 0 if there is no
   // module variable with the given name (the index value of a MODULE variable
@@ -175,6 +182,10 @@ class ScopeInfo : public FixedArray {
 
   // Return the outer ScopeInfo if present.
   ScopeInfo OuterScopeInfo() const;
+
+  // Returns true if this ScopeInfo was created for a scope that skips the
+  // closest outer class when resolving private names.
+  bool PrivateNameLookupSkipsOuterClass() const;
 
 #ifdef DEBUG
   bool Equals(ScopeInfo other) const;
@@ -240,6 +251,10 @@ class ScopeInfo : public FixedArray {
   using HasOuterScopeInfoField = FunctionKindField::Next<bool, 1>;
   using IsDebugEvaluateScopeField = HasOuterScopeInfoField::Next<bool, 1>;
   using ForceContextAllocationField = IsDebugEvaluateScopeField::Next<bool, 1>;
+  using PrivateNameLookupSkipsOuterClassField =
+      ForceContextAllocationField::Next<bool, 1>;
+  using CanElideThisHoleChecksField =
+      PrivateNameLookupSkipsOuterClassField::Next<bool, 1>;
 
   STATIC_ASSERT(kLastFunctionKind <= FunctionKindField::kMax);
 
@@ -310,6 +325,7 @@ class ScopeInfo : public FixedArray {
   using InitFlagField = VariableModeField::Next<InitializationFlag, 1>;
   using MaybeAssignedFlagField = InitFlagField::Next<MaybeAssignedFlag, 1>;
   using ParameterNumberField = MaybeAssignedFlagField::Next<uint32_t, 16>;
+  using IsStaticFlagField = ParameterNumberField::Next<IsStaticFlag, 1>;
 
   friend class ScopeIterator;
   friend std::ostream& operator<<(std::ostream& os,

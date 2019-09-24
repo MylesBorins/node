@@ -10,6 +10,7 @@
 #include "src/heap/heap.h"
 #include "src/heap/invalidated-slots-inl.h"
 #include "src/heap/invalidated-slots.h"
+#include "src/heap/store-buffer.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/heap/heap-tester.h"
 #include "test/cctest/heap/heap-utils.h"
@@ -48,6 +49,154 @@ Page* HeapTester::AllocateByteArraysOnPage(
   return page;
 }
 
+template <RememberedSetType direction>
+static size_t GetRememberedSetSize(HeapObject obj) {
+  std::set<Address> slots;
+  RememberedSet<direction>::Iterate(
+      MemoryChunk::FromHeapObject(obj),
+      [&slots](MaybeObjectSlot slot) {
+        slots.insert(slot.address());
+        return KEEP_SLOT;
+      },
+      SlotSet::KEEP_EMPTY_BUCKETS);
+  return slots.size();
+}
+
+HEAP_TEST(StoreBuffer_CreateFromOldToYoung) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+  Heap* heap = isolate->heap();
+  heap::SealCurrentObjects(heap);
+  CHECK(heap->store_buffer()->Empty());
+
+  HandleScope scope(isolate);
+  const int n = 10;
+  Handle<FixedArray> old = factory->NewFixedArray(n, AllocationType::kOld);
+
+  // Fill the array with refs to both old and new targets.
+  {
+    const auto prev_top = *(heap->store_buffer_top_address());
+    HandleScope scope_inner(isolate);
+    intptr_t expected_slots_count = 0;
+
+    // Add refs from old to new.
+    for (int i = 0; i < n / 2; i++) {
+      Handle<Object> number = factory->NewHeapNumber(i);
+      old->set(i, *number);
+      expected_slots_count++;
+    }
+    // Add refs from old to old.
+    for (int i = n / 2; i < n; i++) {
+      Handle<Object> number = factory->NewHeapNumber<AllocationType::kOld>(i);
+      old->set(i, *number);
+    }
+    // All old to new refs should have been captured and only them.
+    const auto new_top = *(heap->store_buffer_top_address());
+    const intptr_t added_slots_count =
+        (new_top - prev_top) / kSystemPointerSize;
+    CHECK_EQ(expected_slots_count, added_slots_count);
+  }
+
+  // GC should flush the store buffer into remembered sets and retain the target
+  // young objects.
+  CHECK_EQ(0, GetRememberedSetSize<OLD_TO_NEW>(*old));
+  CcTest::CollectGarbage(i::NEW_SPACE);
+
+  CHECK(heap->store_buffer()->Empty());
+  CHECK_EQ(n / 2, GetRememberedSetSize<OLD_TO_NEW>(*old));
+  CHECK(Heap::InYoungGeneration(old->get(0)));
+}
+
+HEAP_TEST(StoreBuffer_Overflow) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+
+  // Add enough refs from old to new to cause overflow of both buffer chunks.
+  const int n = 2 * StoreBuffer::kStoreBufferSize / kSystemPointerSize + 1;
+  HandleScope scope(isolate);
+  Handle<FixedArray> old = factory->NewFixedArray(n, AllocationType::kOld);
+  for (int i = 0; i < n; i++) {
+    Handle<Object> number = factory->NewHeapNumber(i);
+    old->set(i, *number);
+  }
+
+  // No test validations, the buffer flipping code triggered by the overflow
+  // self-validates with asserts.
+}
+
+HEAP_TEST(StoreBuffer_NotUsedOnAgingObjectWithRefsToYounger) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+  Heap* heap = isolate->heap();
+  heap::SealCurrentObjects(heap);
+  CHECK(heap->store_buffer()->Empty());
+
+  const int n = 10;
+  HandleScope scope(isolate);
+  Handle<FixedArray> arr = factory->NewFixedArray(n);
+
+  // Transition the array into the older new tier.
+  CcTest::CollectGarbage(i::NEW_SPACE);
+  CHECK(Heap::InYoungGeneration(*arr));
+
+  // Fill the array with younger objects.
+  {
+    HandleScope scope_inner(isolate);
+    for (int i = 0; i < n; i++) {
+      Handle<Object> number = factory->NewHeapNumber(i);
+      arr->set(i, *number);
+    }
+
+    // The references aren't crossing generations yet so none should be tracked.
+    CHECK(heap->store_buffer()->Empty());
+  }
+
+  // Promote the array into old, its elements are still in new, the old to new
+  // refs are inserted directly into the remembered sets during GC.
+  CcTest::CollectGarbage(i::NEW_SPACE);
+
+  CHECK(heap->InOldSpace(*arr));
+  CHECK(Heap::InYoungGeneration(arr->get(n / 2)));
+  CHECK(heap->store_buffer()->Empty());
+  CHECK_EQ(n, GetRememberedSetSize<OLD_TO_NEW>(*arr));
+}
+
+HEAP_TEST(RememberedSet_LargePage) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+  Heap* heap = isolate->heap();
+  heap::SealCurrentObjects(heap);
+  CHECK(heap->store_buffer()->Empty());
+  v8::HandleScope scope(CcTest::isolate());
+
+  // Allocate an object in Large space.
+  const int count = Max(FixedArray::kMaxRegularLength + 1, 128 * KB);
+  Handle<FixedArray> arr = factory->NewFixedArray(count, AllocationType::kOld);
+  CHECK(heap->lo_space()->Contains(*arr));
+
+  // Create OLD_TO_NEW references from the large object.
+  {
+    v8::HandleScope short_lived(CcTest::isolate());
+    Handle<Object> number = factory->NewHeapNumber(42);
+    arr->set(0, *number);
+    arr->set(count - 1, *number);
+    CHECK(!heap->store_buffer()->Empty());
+  }
+
+  // GC should flush the store buffer into the remembered set of the large page,
+  // it should also keep the young targets alive.
+  CcTest::CollectAllGarbage();
+
+  CHECK(heap->store_buffer()->Empty());
+  CHECK(Heap::InYoungGeneration(arr->get(0)));
+  CHECK(Heap::InYoungGeneration(arr->get(count - 1)));
+  CHECK_EQ(2, GetRememberedSetSize<OLD_TO_NEW>(*arr));
+}
+
 HEAP_TEST(InvalidatedSlotsNoInvalidatedRanges) {
   CcTest::InitializeVM();
   Heap* heap = CcTest::heap();
@@ -70,8 +219,7 @@ HEAP_TEST(InvalidatedSlotsSomeInvalidatedRanges) {
   Page* page = AllocateByteArraysOnPage(heap, &byte_arrays);
   // Register every second byte arrays as invalidated.
   for (size_t i = 0; i < byte_arrays.size(); i += 2) {
-    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i],
-                                                         byte_arrays[i].Size());
+    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i]);
   }
   InvalidatedSlotsFilter filter = InvalidatedSlotsFilter::OldToOld(page);
   for (size_t i = 0; i < byte_arrays.size(); i++) {
@@ -95,8 +243,7 @@ HEAP_TEST(InvalidatedSlotsAllInvalidatedRanges) {
   Page* page = AllocateByteArraysOnPage(heap, &byte_arrays);
   // Register the all byte arrays as invalidated.
   for (size_t i = 0; i < byte_arrays.size(); i++) {
-    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i],
-                                                         byte_arrays[i].Size());
+    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i]);
   }
   InvalidatedSlotsFilter filter = InvalidatedSlotsFilter::OldToOld(page);
   for (size_t i = 0; i < byte_arrays.size(); i++) {
@@ -117,8 +264,7 @@ HEAP_TEST(InvalidatedSlotsAfterTrimming) {
   Page* page = AllocateByteArraysOnPage(heap, &byte_arrays);
   // Register the all byte arrays as invalidated.
   for (size_t i = 0; i < byte_arrays.size(); i++) {
-    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i],
-                                                         byte_arrays[i].Size());
+    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i]);
   }
   // Trim byte arrays and check that the slots outside the byte arrays are
   // considered invalid if the old space page was swept.
@@ -145,8 +291,7 @@ HEAP_TEST(InvalidatedSlotsEvacuationCandidate) {
   // This should be no-op because the page is marked as evacuation
   // candidate.
   for (size_t i = 0; i < byte_arrays.size(); i++) {
-    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i],
-                                                         byte_arrays[i].Size());
+    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i]);
   }
   // All slots must still be valid.
   InvalidatedSlotsFilter filter = InvalidatedSlotsFilter::OldToOld(page);
@@ -169,8 +314,7 @@ HEAP_TEST(InvalidatedSlotsResetObjectRegression) {
   heap->RightTrimFixedArray(byte_arrays[0], byte_arrays[0].length() - 8);
   // Register the all byte arrays as invalidated.
   for (size_t i = 0; i < byte_arrays.size(); i++) {
-    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i],
-                                                         byte_arrays[i].Size());
+    page->RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(byte_arrays[i]);
   }
   // All slots must still be invalid.
   InvalidatedSlotsFilter filter = InvalidatedSlotsFilter::OldToOld(page);
@@ -359,8 +503,7 @@ HEAP_TEST(InvalidatedSlotsCleanupFull) {
   Page* page = AllocateByteArraysOnPage(heap, &byte_arrays);
   // Register all byte arrays as invalidated.
   for (size_t i = 0; i < byte_arrays.size(); i++) {
-    page->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(byte_arrays[i],
-                                                         byte_arrays[i].Size());
+    page->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(byte_arrays[i]);
   }
 
   // Mark full page as free
@@ -379,8 +522,7 @@ HEAP_TEST(InvalidatedSlotsCleanupEachObject) {
   Page* page = AllocateByteArraysOnPage(heap, &byte_arrays);
   // Register all byte arrays as invalidated.
   for (size_t i = 0; i < byte_arrays.size(); i++) {
-    page->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(byte_arrays[i],
-                                                         byte_arrays[i].Size());
+    page->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(byte_arrays[i]);
   }
 
   // Mark each object as free on page
@@ -405,11 +547,9 @@ HEAP_TEST(InvalidatedSlotsCleanupRightTrim) {
 
   CHECK_GT(byte_arrays.size(), 1);
   ByteArray& invalidated = byte_arrays[1];
-  int invalidated_size = invalidated.Size();
 
   heap->RightTrimFixedArray(invalidated, invalidated.length() - 8);
-  page->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(invalidated,
-                                                       invalidated_size);
+  page->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(invalidated);
 
   // Free memory at end of invalidated object
   InvalidatedSlotsCleanup cleanup = InvalidatedSlotsCleanup::OldToNew(page);
@@ -418,8 +558,6 @@ HEAP_TEST(InvalidatedSlotsCleanupRightTrim) {
 
   // After cleanup the invalidated object should be smaller
   InvalidatedSlots* invalidated_slots = page->invalidated_slots<OLD_TO_NEW>();
-  CHECK_GE((*invalidated_slots)[HeapObject::FromAddress(invalidated.address())],
-           invalidated.Size());
   CHECK_EQ(invalidated_slots->size(), 1);
 }
 

@@ -427,6 +427,7 @@ Parser::Parser(ParseInfo* info)
   set_allow_harmony_nullish(info->allow_harmony_nullish());
   set_allow_harmony_optional_chaining(info->allow_harmony_optional_chaining());
   set_allow_harmony_private_methods(info->allow_harmony_private_methods());
+  set_allow_harmony_top_level_await(info->allow_harmony_top_level_await());
   for (int feature = 0; feature < v8::Isolate::kUseCounterFeatureCount;
        ++feature) {
     use_counts_[feature] = 0;
@@ -576,8 +577,32 @@ FunctionLiteral* Parser::DoParseProgram(Isolate* isolate, ParseInfo* info) {
           BuildInitialYield(kNoSourcePosition, kGeneratorFunction);
       body.Add(
           factory()->NewExpressionStatement(initial_yield, kNoSourcePosition));
-
-      ParseModuleItemList(&body);
+      if (allow_harmony_top_level_await()) {
+        // First parse statements into a buffer. Then, if there was a
+        // top level await, create an inner block and rewrite the body of the
+        // module as an async function. Otherwise merge the statements back
+        // into the main body.
+        BlockT block = impl()->NullBlock();
+        {
+          StatementListT statements(pointer_buffer());
+          ParseModuleItemList(&statements);
+          // Modules will always have an initial yield. If there are any
+          // additional suspends, i.e. awaits, then we treat the module as an
+          // AsyncModule.
+          if (function_state.suspend_count() > 1) {
+            scope->set_is_async_module();
+            block = factory()->NewBlock(true, statements);
+          } else {
+            statements.MergeInto(&body);
+          }
+        }
+        if (IsAsyncModule(scope->function_kind())) {
+          impl()->RewriteAsyncFunctionBody(
+              &body, block, factory()->NewUndefinedLiteral(kNoSourcePosition));
+        }
+      } else {
+        ParseModuleItemList(&body);
+      }
       if (!has_error() &&
           !module()->Validate(this->scope()->AsModuleScope(),
                               pending_error_handler(), zone())) {
@@ -705,8 +730,17 @@ FunctionLiteral* Parser::ParseFunction(Isolate* isolate, ParseInfo* info,
   info->set_function_name(ast_value_factory()->GetString(name));
   scanner_.Initialize();
 
-  FunctionLiteral* result =
-      DoParseFunction(isolate, info, info->function_name());
+  FunctionLiteral* result;
+  if (V8_UNLIKELY(shared_info->private_name_lookup_skips_outer_class() &&
+                  original_scope_->is_class_scope())) {
+    // If the function skips the outer class and the outer scope is a class, the
+    // function is in heritage position. Otherwise the function scope's skip bit
+    // will be correctly inherited from the outer scope.
+    ClassScope::HeritageParsingScope heritage(original_scope_->AsClassScope());
+    result = DoParseFunction(isolate, info, info->function_name());
+  } else {
+    result = DoParseFunction(isolate, info, info->function_name());
+  }
   MaybeResetCharacterStream(info, result);
   MaybeProcessSourceRanges(info, result, stack_limit_);
   if (result != nullptr) {
@@ -2493,10 +2527,10 @@ bool Parser::SkipFunction(const AstRawString* function_name, FunctionKind kind,
   bookmark.Set(function_scope->start_position());
 
   UnresolvedList::Iterator unresolved_private_tail;
-  ClassScope* closest_class_scope = function_scope->GetClassScope();
-  if (closest_class_scope != nullptr) {
+  PrivateNameScopeIterator private_name_scope_iter(function_scope);
+  if (!private_name_scope_iter.Done()) {
     unresolved_private_tail =
-        closest_class_scope->GetUnresolvedPrivateNameTail();
+        private_name_scope_iter.GetScope()->GetUnresolvedPrivateNameTail();
   }
 
   // With no cached data, we partially parse the function, without building an
@@ -2520,8 +2554,8 @@ bool Parser::SkipFunction(const AstRawString* function_name, FunctionKind kind,
     // the state before preparsing. The caller may then fully parse the function
     // to identify the actual error.
     bookmark.Apply();
-    if (closest_class_scope != nullptr) {
-      closest_class_scope->ResetUnresolvedPrivateNameTail(
+    if (!private_name_scope_iter.Done()) {
+      private_name_scope_iter.GetScope()->ResetUnresolvedPrivateNameTail(
           unresolved_private_tail);
     }
     function_scope->ResetAfterPreparsing(ast_value_factory_, true);
@@ -2542,8 +2576,8 @@ bool Parser::SkipFunction(const AstRawString* function_name, FunctionKind kind,
     *num_parameters = logger->num_parameters();
     *function_length = logger->function_length();
     SkipFunctionLiterals(logger->num_inner_functions());
-    if (closest_class_scope != nullptr) {
-      closest_class_scope->MigrateUnresolvedPrivateNameTail(
+    if (!private_name_scope_iter.Done()) {
+      private_name_scope_iter.GetScope()->MigrateUnresolvedPrivateNameTail(
           factory(), unresolved_private_tail);
     }
     function_scope->AnalyzePartially(this, factory(), MaybeParsingArrowhead());
@@ -2773,13 +2807,15 @@ Variable* Parser::CreateSyntheticContextVariable(const AstRawString* name) {
 
 Variable* Parser::CreatePrivateNameVariable(ClassScope* scope,
                                             VariableMode mode,
+                                            IsStaticFlag is_static_flag,
                                             const AstRawString* name) {
   DCHECK_NOT_NULL(name);
   int begin = position();
   int end = end_position();
   bool was_added = false;
   DCHECK(IsConstVariableMode(mode));
-  Variable* var = scope->DeclarePrivateName(name, mode, &was_added);
+  Variable* var =
+      scope->DeclarePrivateName(name, mode, is_static_flag, &was_added);
   if (!was_added) {
     Scanner::Location loc(begin, end);
     ReportMessageAt(loc, MessageTemplate::kVarRedeclaration, var->raw_name());
@@ -2825,8 +2861,10 @@ void Parser::DeclarePrivateClassMember(ClassScope* scope,
     }
   }
 
-  Variable* private_name_var =
-      CreatePrivateNameVariable(scope, GetVariableMode(kind), property_name);
+  Variable* private_name_var = CreatePrivateNameVariable(
+      scope, GetVariableMode(kind),
+      is_static ? IsStaticFlag::kStatic : IsStaticFlag::kNotStatic,
+      property_name);
   int pos = property->value()->position();
   if (pos == kNoSourcePosition) {
     pos = property->key()->position();
@@ -3250,7 +3288,7 @@ void Parser::RewriteAsyncFunctionBody(ScopedPtrList<Statement>* body,
   //   })
   // }
 
-  block->statements()->Add(factory()->NewAsyncReturnStatement(
+  block->statements()->Add(factory()->NewSyntheticAsyncReturnStatement(
                                return_value, return_value->position()),
                            zone());
   block = BuildRejectPromiseOnException(block);

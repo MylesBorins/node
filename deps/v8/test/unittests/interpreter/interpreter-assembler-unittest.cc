@@ -16,7 +16,6 @@
 using ::testing::_;
 using ::testing::Eq;
 using v8::internal::compiler::Node;
-using v8::internal::compiler::TNode;
 
 namespace c = v8::internal::compiler;
 
@@ -310,44 +309,6 @@ InterpreterAssemblerTest::InterpreterAssemblerForTest::IsLoadRegisterOperand(
       LoadSensitivity::kCritical));
 }
 
-TARGET_TEST_F(InterpreterAssemblerTest, Jump) {
-  // If debug code is enabled we emit extra code in Jump.
-  if (FLAG_debug_code) return;
-
-  int jump_offsets[] = {-9710, -77, 0, +3, +97109};
-  TRACED_FOREACH(int, jump_offset, jump_offsets) {
-    TRACED_FOREACH(interpreter::Bytecode, bytecode, kBytecodes) {
-      if (!interpreter::Bytecodes::IsJump(bytecode)) return;
-
-      InterpreterAssemblerTestState state(this, bytecode);
-      InterpreterAssemblerForTest m(&state, bytecode);
-      Node* tail_call_node = m.Jump(m.IntPtrConstant(jump_offset));
-
-      Matcher<Node*> next_bytecode_offset_matcher = c::IsIntPtrAdd(
-          c::IsParameter(InterpreterDispatchDescriptor::kBytecodeOffset),
-          c::IsIntPtrConstant(jump_offset));
-      Matcher<Node*> target_bytecode_matcher =
-          m.IsLoad(MachineType::Uint8(), _, next_bytecode_offset_matcher);
-      target_bytecode_matcher =
-          c::IsChangeUint32ToWord(target_bytecode_matcher);
-      Matcher<Node*> code_target_matcher = m.IsLoad(
-          MachineType::Pointer(),
-          c::IsParameter(InterpreterDispatchDescriptor::kDispatchTable),
-          c::IsWordShl(target_bytecode_matcher,
-                       c::IsIntPtrConstant(kSystemPointerSizeLog2)));
-
-      EXPECT_THAT(
-          tail_call_node,
-          c::IsTailCall(
-              _, code_target_matcher,
-              c::IsParameter(InterpreterDispatchDescriptor::kAccumulator),
-              next_bytecode_offset_matcher, _,
-              c::IsParameter(InterpreterDispatchDescriptor::kDispatchTable), _,
-              _));
-    }
-  }
-}
-
 TARGET_TEST_F(InterpreterAssemblerTest, BytecodeOperand) {
   static const OperandScale kOperandScales[] = {
       OperandScale::kSingle, OperandScale::kDouble, OperandScale::kQuadruple};
@@ -444,7 +405,7 @@ TARGET_TEST_F(InterpreterAssemblerTest, LoadConstantPoolEntry) {
     InterpreterAssemblerForTest m(&state, bytecode);
     {
       TNode<IntPtrT> index = m.IntPtrConstant(2);
-      Node* load_constant = m.LoadConstantPoolEntry(index);
+      TNode<Object> load_constant = m.LoadConstantPoolEntry(index);
 #ifdef V8_COMPRESS_POINTERS
       Matcher<Node*> constant_pool_matcher =
           IsChangeCompressedToTagged(m.IsLoadFromObject(
@@ -474,7 +435,8 @@ TARGET_TEST_F(InterpreterAssemblerTest, LoadConstantPoolEntry) {
     }
     {
       Node* index = m.Parameter(2);
-      Node* load_constant = m.LoadConstantPoolEntry(index);
+      TNode<Object> load_constant =
+          m.LoadConstantPoolEntry(m.ReinterpretCast<IntPtrT>(index));
 #if V8_COMPRESS_POINTERS
       Matcher<Node*> constant_pool_matcher =
           IsChangeCompressedToTagged(m.IsLoadFromObject(
@@ -554,10 +516,10 @@ TARGET_TEST_F(InterpreterAssemblerTest, CallRuntime) {
         Callable builtin =
             CodeFactory::InterpreterCEntry(isolate(), result_size);
 
-        TNode<Int32T> function_id = m.Int32Constant(0);
+        TNode<Uint32T> function_id = m.Uint32Constant(0);
         InterpreterAssembler::RegListNodePair registers(m.IntPtrConstant(1),
                                                         m.Int32Constant(2));
-        TNode<Object> context = m.ReinterpretCast<Object>(m.Int32Constant(4));
+        TNode<Context> context = m.ReinterpretCast<Context>(m.Int32Constant(4));
 
         Matcher<Node*> function_table = c::IsExternalConstant(
             ExternalReference::runtime_function_table_address_for_unittests(

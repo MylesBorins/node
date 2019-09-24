@@ -207,8 +207,9 @@ DEFINE_IMPLICATION(harmony_import_meta, harmony_dynamic_import)
   V(harmony_private_methods, "harmony private methods in class literals") \
   V(harmony_regexp_sequence, "RegExp Unicode sequence properties")        \
   V(harmony_weak_refs, "harmony weak references")                         \
-  V(harmony_optional_chaining, "harmony optional chaining syntax")        \
-  V(harmony_nullish, "harmony nullish operator")
+  V(harmony_regexp_match_indices, "harmony regexp match indices")         \
+  V(harmony_nullish, "harmony nullish operator")                          \
+  V(harmony_top_level_await, "harmony top level await")
 
 #ifdef V8_INTL_SUPPORT
 #define HARMONY_INPROGRESS(V)                              \
@@ -219,7 +220,8 @@ DEFINE_IMPLICATION(harmony_import_meta, harmony_dynamic_import)
 #endif
 
 // Features that are complete (but still behind --harmony/es-staging flag).
-#define HARMONY_STAGED_BASE(V)
+#define HARMONY_STAGED_BASE(V)                                     \
+  V(harmony_optional_chaining, "harmony optional chaining syntax")
 
 #ifdef V8_INTL_SUPPORT
 #define HARMONY_STAGED(V)                                  \
@@ -245,12 +247,7 @@ DEFINE_IMPLICATION(harmony_import_meta, harmony_dynamic_import)
   V(harmony_promise_all_settled, "harmony Promise.allSettled")
 
 #ifdef V8_INTL_SUPPORT
-#define HARMONY_SHIPPING(V)                                                \
-  HARMONY_SHIPPING_BASE(V)                                                 \
-  V(harmony_intl_bigint, "BigInt.prototype.toLocaleString")                \
-  V(harmony_intl_date_format_range, "DateTimeFormat formatRange")          \
-  V(harmony_intl_datetime_style, "dateStyle timeStyle for DateTimeFormat") \
-  V(harmony_intl_numberformat_unified, "Unified Intl.NumberFormat Features")
+#define HARMONY_SHIPPING(V) HARMONY_SHIPPING_BASE(V)
 #else
 #define HARMONY_SHIPPING(V) HARMONY_SHIPPING_BASE(V)
 #endif
@@ -390,7 +387,7 @@ DEFINE_BOOL(enable_one_shot_optimization, true,
             "only be executed once")
 
 // Flag for sealed, frozen elements kind instead of dictionary elements kind
-DEFINE_BOOL_READONLY(enable_sealed_frozen_elements_kind, false,
+DEFINE_BOOL_READONLY(enable_sealed_frozen_elements_kind, true,
                      "Enable sealed, frozen elements kind")
 
 // Flags for data representation optimizations
@@ -468,6 +465,12 @@ DEFINE_BOOL(trace_track_allocation_sites, false,
             "trace the tracking of allocation sites")
 DEFINE_BOOL(trace_migration, false, "trace object migration")
 DEFINE_BOOL(trace_generalization, false, "trace map generalization")
+
+// Flags for TurboProp.
+DEFINE_BOOL(turboprop, false,
+            "enable experimental turboprop mid-tier compiler.")
+DEFINE_NEG_IMPLICATION(turboprop, turbo_inlining)
+DEFINE_NEG_IMPLICATION(turboprop, inline_accessors)
 
 // Flags for concurrent recompilation.
 DEFINE_BOOL(concurrent_recompilation, true,
@@ -608,8 +611,6 @@ DEFINE_BOOL(turbo_store_elimination, true,
 DEFINE_BOOL(trace_store_elimination, false, "trace store elimination")
 DEFINE_BOOL(turbo_rewrite_far_jumps, true,
             "rewrite far to near jumps (ia32,x64)")
-DEFINE_BOOL(experimental_inline_promise_constructor, true,
-            "inline the Promise constructor in TurboFan")
 DEFINE_BOOL(
     stress_gc_during_compilation, false,
     "simulate GC/compiler thread race related to https://crbug.com/v8/8520")
@@ -750,7 +751,7 @@ DEFINE_BOOL(wasm_lazy_compilation, false,
             "enable lazy compilation for all wasm modules")
 DEFINE_DEBUG_BOOL(trace_wasm_lazy_compilation, false,
                   "trace lazy compilation of wasm functions")
-DEFINE_BOOL(wasm_grow_shared_memory, false,
+DEFINE_BOOL(wasm_grow_shared_memory, true,
             "allow growing shared WebAssembly memory objects")
 DEFINE_BOOL(wasm_lazy_validation, false,
             "enable lazy validation for lazily compiled wasm functions")
@@ -762,6 +763,12 @@ DEFINE_BOOL(wasm_code_gc, true, "enable garbage collection of wasm code")
 DEFINE_BOOL(trace_wasm_code_gc, false, "trace garbage collection of wasm code")
 DEFINE_BOOL(stress_wasm_code_gc, false,
             "stress test garbage collection of wasm code")
+DEFINE_BOOL(wasm_far_jump_table, false,
+            "use multiple separate code spaces that might require far jumps "
+            "between them")
+DEFINE_IMPLICATION(future, wasm_far_jump_table)
+DEFINE_INT(wasm_max_initial_code_space_reservation, 0,
+           "maximum size of the initial wasm code space reservation (in MB)")
 
 // Profiler flags.
 DEFINE_INT(frame_count, 1, "number of stack frames inspected by the profiler")
@@ -885,6 +892,7 @@ DEFINE_BOOL(trace_gc_object_stats, false,
 DEFINE_BOOL(trace_zone_stats, false, "trace zone memory usage")
 DEFINE_BOOL(track_retaining_path, false,
             "enable support for tracking retaining path")
+DEFINE_DEBUG_BOOL(trace_backing_store, false, "trace backing store events")
 DEFINE_BOOL(concurrent_array_buffer_freeing, true,
             "free array buffer allocations on a background thread")
 DEFINE_INT(gc_stats, 0, "Used by tracing internally to enable gc statistics")
@@ -960,6 +968,10 @@ DEFINE_BOOL(gc_experiment_less_compaction, false,
             "less compaction in non-memory reducing mode")
 
 DEFINE_BOOL(disable_abortjs, false, "disables AbortJS runtime function")
+
+DEFINE_BOOL(randomize_all_allocations, false,
+            "randomize virtual memory reservations by ignoring any hints "
+            "passed when allocating pages")
 
 DEFINE_BOOL(manual_evacuation_candidates_selection, false,
             "Test mode only flag. It allows an unit test to select evacuation "
@@ -1227,6 +1239,8 @@ DEFINE_BOOL(print_all_exceptions, false,
 DEFINE_BOOL(
     detailed_error_stack_trace, false,
     "includes arguments for each function call in the error stack frames array")
+DEFINE_BOOL(adjust_os_scheduling_parameters, true,
+            "adjust OS specific scheduling params for the isolate")
 
 // runtime.cc
 DEFINE_BOOL(runtime_call_stats, false, "report runtime call counts and times")
@@ -1254,9 +1268,12 @@ DEFINE_UINT(serialization_chunk_size, 4096,
 DEFINE_BOOL(regexp_optimization, true, "generate optimized regexp code")
 DEFINE_BOOL(regexp_mode_modifiers, false, "enable inline flags in regexp.")
 DEFINE_BOOL(regexp_interpret_all, false, "interpret all regexp code")
-DEFINE_BOOL(regexp_tier_up, false,
-            "enable regexp interpreter and tier up to the compiler")
-DEFINE_NEG_IMPLICATION(regexp_interpret_all, regexp_tier_up)
+DEFINE_BOOL(regexp_tier_up, true,
+            "enable regexp interpreter and tier up to the compiler after the "
+            "number of executions set by the tier up ticks flag")
+DEFINE_INT(regexp_tier_up_ticks, 1,
+           "set the number of executions for the regexp interpreter before "
+           "tiering-up to the compiler")
 
 // Testing flags test/cctest/test-{flags,api,serialization}.cc
 DEFINE_BOOL(testing_bool_flag, true, "testing_bool_flag")

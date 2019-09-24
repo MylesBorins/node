@@ -8,6 +8,7 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include "src/base/optional.h"
@@ -375,7 +376,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // Instruction set functions ------------------------------------------------
 
   // Branch / Jump instructions.
-  // For branches offsets are scaled, i.e. they in instrcutions not in bytes.
+  // For branches offsets are scaled, i.e. in instructions not in bytes.
   // Branch to register.
   void br(const Register& xn);
 

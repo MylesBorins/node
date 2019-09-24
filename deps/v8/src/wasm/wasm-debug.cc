@@ -318,7 +318,8 @@ class InterpreterHandle {
     DCHECK_LT(0, thread->GetFrameCount());
 
     auto frame = thread->GetFrame(thread->GetFrameCount() - 1);
-    return module_object->GetFunctionOffset(frame->function()->func_index) +
+    return GetWasmFunctionOffset(module_object->module(),
+                                 frame->function()->func_index) +
            frame->pc();
   }
 
@@ -502,9 +503,11 @@ wasm::InterpreterHandle* GetInterpreterHandleOrNull(WasmDebugInfo debug_info) {
 Handle<WasmDebugInfo> WasmDebugInfo::New(Handle<WasmInstanceObject> instance) {
   DCHECK(!instance->has_debug_info());
   Factory* factory = instance->GetIsolate()->factory();
+  Handle<Cell> stack_cell = factory->NewCell(factory->empty_fixed_array());
   Handle<WasmDebugInfo> debug_info = Handle<WasmDebugInfo>::cast(
       factory->NewStruct(WASM_DEBUG_INFO_TYPE, AllocationType::kOld));
   debug_info->set_wasm_instance(*instance);
+  debug_info->set_interpreter_reference_stack(*stack_cell);
   instance->set_debug_info(*debug_info);
   return debug_info;
 }
@@ -635,8 +638,8 @@ Handle<Code> WasmDebugInfo::GetCWasmEntry(Handle<WasmDebugInfo> debug_info,
   if (index == -1) {
     index = static_cast<int32_t>(map->FindOrInsert(*sig));
     if (index == entries->length()) {
-      entries = isolate->factory()->CopyFixedArrayAndGrow(
-          entries, entries->length(), AllocationType::kOld);
+      entries =
+          isolate->factory()->CopyFixedArrayAndGrow(entries, entries->length());
       debug_info->set_c_wasm_entries(*entries);
     }
     DCHECK(entries->get(index).IsUndefined(isolate));

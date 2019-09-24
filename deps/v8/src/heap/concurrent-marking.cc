@@ -8,7 +8,6 @@
 #include <unordered_map>
 
 #include "include/v8config.h"
-#include "src/base/template-utils.h"
 #include "src/execution/isolate.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
@@ -864,8 +863,7 @@ void ConcurrentMarking::ScheduleTasks() {
   DCHECK(FLAG_parallel_marking || FLAG_concurrent_marking);
   DCHECK(!heap_->IsTearingDown());
   base::MutexGuard guard(&pending_lock_);
-  DCHECK_EQ(0, pending_task_count_);
-  if (task_count_ == 0) {
+  if (total_task_count_ == 0) {
     static const int num_cores =
         V8::GetCurrentPlatform()->NumberOfWorkerThreads() + 1;
 #if defined(V8_OS_MACOSX)
@@ -873,15 +871,18 @@ void ConcurrentMarking::ScheduleTasks() {
     // marking on competing hyper-threads (regresses Octane/Splay). As such,
     // only use num_cores/2, leaving one of those for the main thread.
     // TODO(ulan): Use all cores on Mac 10.12+.
-    task_count_ = Max(1, Min(kMaxTasks, (num_cores / 2) - 1));
+    total_task_count_ = Max(1, Min(kMaxTasks, (num_cores / 2) - 1));
 #else   // defined(OS_MACOSX)
     // On other platforms use all logical cores, leaving one for the main
     // thread.
-    task_count_ = Max(1, Min(kMaxTasks, num_cores - 1));
+    total_task_count_ = Max(1, Min(kMaxTasks, num_cores - 1));
 #endif  // defined(OS_MACOSX)
+    DCHECK_LE(total_task_count_, kMaxTasks);
+    // One task is for the main thread.
+    STATIC_ASSERT(kMaxTasks + 1 <= MarkingWorklist::kMaxNumTasks);
   }
   // Task id 0 is for the main thread.
-  for (int i = 1; i <= task_count_; i++) {
+  for (int i = 1; i <= total_task_count_; i++) {
     if (!is_pending_[i]) {
       if (FLAG_trace_concurrent_marking) {
         heap_->isolate()->PrintWithTimestamp(
@@ -894,12 +895,12 @@ void ConcurrentMarking::ScheduleTasks() {
       is_pending_[i] = true;
       ++pending_task_count_;
       auto task =
-          base::make_unique<Task>(heap_->isolate(), this, &task_state_[i], i);
+          std::make_unique<Task>(heap_->isolate(), this, &task_state_[i], i);
       cancelable_id_[i] = task->id();
       V8::GetCurrentPlatform()->CallOnWorkerThread(std::move(task));
     }
   }
-  DCHECK_EQ(task_count_, pending_task_count_);
+  DCHECK_EQ(total_task_count_, pending_task_count_);
 }
 
 void ConcurrentMarking::RescheduleTasksIfNeeded() {
@@ -907,11 +908,15 @@ void ConcurrentMarking::RescheduleTasksIfNeeded() {
   if (heap_->IsTearingDown()) return;
   {
     base::MutexGuard guard(&pending_lock_);
-    if (pending_task_count_ > 0) return;
+    // The total task count is initialized in ScheduleTasks from
+    // NumberOfWorkerThreads of the platform.
+    if (total_task_count_ > 0 && pending_task_count_ == total_task_count_) {
+      return;
+    }
   }
   if (!shared_->IsGlobalPoolEmpty() ||
-      !weak_objects_->current_ephemerons.IsEmpty() ||
-      !weak_objects_->discovered_ephemerons.IsEmpty()) {
+      !weak_objects_->current_ephemerons.IsGlobalPoolEmpty() ||
+      !weak_objects_->discovered_ephemerons.IsGlobalPoolEmpty()) {
     ScheduleTasks();
   }
 }
@@ -925,7 +930,7 @@ bool ConcurrentMarking::Stop(StopRequest stop_request) {
   if (stop_request != StopRequest::COMPLETE_TASKS_FOR_TESTING) {
     CancelableTaskManager* task_manager =
         heap_->isolate()->cancelable_task_manager();
-    for (int i = 1; i <= task_count_; i++) {
+    for (int i = 1; i <= total_task_count_; i++) {
       if (is_pending_[i]) {
         if (task_manager->TryAbort(cancelable_id_[i]) ==
             TryAbortResult::kTaskAborted) {
@@ -940,7 +945,7 @@ bool ConcurrentMarking::Stop(StopRequest stop_request) {
   while (pending_task_count_ > 0) {
     pending_condition_.Wait(&pending_lock_);
   }
-  for (int i = 1; i <= task_count_; i++) {
+  for (int i = 1; i <= total_task_count_; i++) {
     DCHECK(!is_pending_[i]);
   }
   return true;
@@ -956,7 +961,7 @@ bool ConcurrentMarking::IsStopped() {
 void ConcurrentMarking::FlushMemoryChunkData(
     MajorNonAtomicMarkingState* marking_state) {
   DCHECK_EQ(pending_task_count_, 0);
-  for (int i = 1; i <= task_count_; i++) {
+  for (int i = 1; i <= total_task_count_; i++) {
     MemoryChunkDataMap& memory_chunk_data = task_state_[i].memory_chunk_data;
     for (auto& pair : memory_chunk_data) {
       // ClearLiveness sets the live bytes to zero.
@@ -978,7 +983,7 @@ void ConcurrentMarking::FlushMemoryChunkData(
 }
 
 void ConcurrentMarking::ClearMemoryChunkData(MemoryChunk* chunk) {
-  for (int i = 1; i <= task_count_; i++) {
+  for (int i = 1; i <= total_task_count_; i++) {
     auto it = task_state_[i].memory_chunk_data.find(chunk);
     if (it != task_state_[i].memory_chunk_data.end()) {
       it->second.live_bytes = 0;
@@ -989,7 +994,7 @@ void ConcurrentMarking::ClearMemoryChunkData(MemoryChunk* chunk) {
 
 size_t ConcurrentMarking::TotalMarkedBytes() {
   size_t result = 0;
-  for (int i = 1; i <= task_count_; i++) {
+  for (int i = 1; i <= total_task_count_; i++) {
     result +=
         base::AsAtomicWord::Relaxed_Load<size_t>(&task_state_[i].marked_bytes);
   }

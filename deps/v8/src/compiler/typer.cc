@@ -2192,8 +2192,14 @@ Type Typer::Visitor::TypeLoadField(Node* node) {
   return FieldAccessOf(node->op()).type;
 }
 
+Type Typer::Visitor::TypeLoadMessage(Node* node) { return Type::Any(); }
+
 Type Typer::Visitor::TypeLoadElement(Node* node) {
   return ElementAccessOf(node->op()).type;
+}
+
+Type Typer::Visitor::TypeLoadStackArgument(Node* node) {
+  return Type::NonInternal();
 }
 
 Type Typer::Visitor::TypeLoadFromObject(Node* node) { UNREACHABLE(); }
@@ -2221,6 +2227,8 @@ Type Typer::Visitor::TypeLoadDataViewElement(Node* node) {
 }
 
 Type Typer::Visitor::TypeStoreField(Node* node) { UNREACHABLE(); }
+
+Type Typer::Visitor::TypeStoreMessage(Node* node) { UNREACHABLE(); }
 
 Type Typer::Visitor::TypeStoreElement(Node* node) { UNREACHABLE(); }
 

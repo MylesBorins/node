@@ -2894,6 +2894,18 @@ class RepresentationSelector {
         SetOutput(node, MachineRepresentation::kTaggedPointer);
         return;
       }
+      case IrOpcode::kLoadMessage: {
+        if (truncation.IsUnused()) return VisitUnused(node);
+        VisitUnop(node, UseInfo::Word(), MachineRepresentation::kTagged);
+        return;
+      }
+      case IrOpcode::kStoreMessage: {
+        ProcessInput(node, 0, UseInfo::Word());
+        ProcessInput(node, 1, UseInfo::AnyTagged());
+        ProcessRemainingInputs(node, 2);
+        SetOutput(node, MachineRepresentation::kNone);
+        return;
+      }
       case IrOpcode::kLoadFieldByIndex: {
         if (truncation.IsUnused()) return VisitUnused(node);
         VisitBinop(node, UseInfo::AnyTagged(), UseInfo::TruncatingWord32(),
@@ -2943,6 +2955,11 @@ class RepresentationSelector {
         ElementAccess access = ElementAccessOf(node->op());
         VisitBinop(node, UseInfoForBasePointer(access), UseInfo::Word(),
                    access.machine_type.representation());
+        return;
+      }
+      case IrOpcode::kLoadStackArgument: {
+        if (truncation.IsUnused()) return VisitUnused(node);
+        VisitBinop(node, UseInfo::Word(), MachineRepresentation::kTagged);
         return;
       }
       case IrOpcode::kStoreElement: {

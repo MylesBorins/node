@@ -736,8 +736,8 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   Node* BitcastTaggedToWord(Node* a) {
       return AddNode(machine()->BitcastTaggedToWord(), a);
   }
-  Node* BitcastTaggedSignedToWord(Node* a) {
-    return AddNode(machine()->BitcastTaggedSignedToWord(), a);
+  Node* BitcastTaggedToWordForTagAndSmiBits(Node* a) {
+    return AddNode(machine()->BitcastTaggedToWordForTagAndSmiBits(), a);
   }
   Node* BitcastMaybeObjectToWord(Node* a) {
       return AddNode(machine()->BitcastMaybeObjectToWord(), a);
@@ -965,8 +965,8 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
 
   // Tail call a given call descriptor and the given arguments.
   // The call target is passed as part of the {inputs} array.
-  Node* TailCallN(CallDescriptor* call_descriptor, int input_count,
-                  Node* const* inputs);
+  void TailCallN(CallDescriptor* call_descriptor, int input_count,
+                 Node* const* inputs);
 
   // Type representing C function argument with type info.
   using CFunctionArg = std::pair<MachineType, Node*>;

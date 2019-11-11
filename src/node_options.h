@@ -101,9 +101,9 @@ class EnvironmentOptions : public Options {
  public:
   bool abort_on_uncaught_exception = false;
   bool enable_source_maps = false;
-  bool experimental_conditional_exports = false;
+  bool experimental_conditional_exports = true;
   bool experimental_json_modules = false;
-  bool experimental_resolve_self = false;
+  bool experimental_resolve_self = true;
   std::string es_module_specifier_resolution;
   bool experimental_wasm_modules = false;
   std::string module_type;

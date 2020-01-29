@@ -194,3 +194,35 @@ const stat = promisify(fs.stat);
                common.invalidArgTypeHelper(input)
     });
 });
+
+{
+  class Strong {
+    constructor() {
+      this.toTheLimit = 'fhqwhgads';
+    }
+
+    bad(callback) {
+      callback(null, this.toTheLimit);
+    }
+  }
+
+  const strong = new Strong();
+  const bad = promisify(strong.bad, strong);
+  bad().then(common.mustCall((value) => {
+    assert.strictEqual(value, 'fhqwhgads');
+  }));
+  bad.bind({})().then(common.mustCall((value) => {
+    assert.strictEqual(value, 'fhqwhgads');
+  }));
+}
+
+[true, 'str', Symbol()].forEach((input) => {
+  assert.throws(
+    () => promisify(() => {}, input),
+    {
+      code: 'ERR_INVALID_ARG_TYPE',
+      name: 'TypeError',
+      message: 'The "thisObj" argument must be of type object.' +
+               common.invalidArgTypeHelper(input)
+    });
+});

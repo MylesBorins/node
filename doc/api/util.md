@@ -879,12 +879,17 @@ Otherwise, returns `false`.
 See [`assert.deepStrictEqual()`][] for more information about deep strict
 equality.
 
-## `util.promisify(original)`
+## `util.promisify(original[, thisObj])`
 <!-- YAML
 added: v8.0.0
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: A second argument can be passed to define a this object to bind to
 -->
 
 * `original` {Function}
+* `thisObj` {Object}
 * Returns: {Function}
 
 Takes a function following the common error-first callback style, i.e. taking
@@ -927,7 +932,7 @@ an error-first callback, it will still be passed an error-first
 callback as its last argument.
 
 Using `promisify()` on class methods or other methods that use `this` may not
-work as expected unless handled specially:
+work as expected unless a second argument is passed to speicfy object to bind:
 
 ```js
 const util = require('util');
@@ -945,12 +950,11 @@ class Foo {
 const foo = new Foo();
 
 const naiveBar = util.promisify(foo.bar);
+naiveBar().then(a => console.log(a));
 // TypeError: Cannot read property 'a' of undefined
-// naiveBar().then(a => console.log(a));
 
-naiveBar.call(foo).then((a) => console.log(a)); // '42'
 
-const bindBar = naiveBar.bind(foo);
+const bindBar = util.promisify(foo.bar, foo);
 bindBar().then((a) => console.log(a)); // '42'
 ```
 

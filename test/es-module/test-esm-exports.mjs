@@ -33,6 +33,14 @@ import fromInside from '../fixtures/node_modules/pkgexports/lib/hole.js';
       { default: 'self-cjs' } : { default: 'self-mjs' }],
     // Resolve self sugar
     ['pkgexports-sugar', { default: 'main' }],
+    // Resolve exports false
+    isRequire ? [
+      'pkgexports-false-cjs',
+      { default: 'false-exports-cjs'
+    }] : [
+      'pkgexports-false-mjs',
+      { default: 'false-exports-mjs'
+    }],
   ]);
 
   for (const [validSpecifier, expected] of validSpecifiers) {

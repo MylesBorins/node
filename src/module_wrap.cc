@@ -1145,25 +1145,27 @@ Maybe<URL> PackageMainResolve(Environment* env,
 
     if (!pcfg.exports.IsEmpty()) {
       Local<Value> exports = pcfg.exports.Get(isolate);
-      Maybe<bool> isConditionalExportsMainSugar =
-          IsConditionalExportsMainSugar(env, exports, pjson_url, base);
-      if (isConditionalExportsMainSugar.IsNothing())
-        return Nothing<URL>();
-      if (isConditionalExportsMainSugar.FromJust()) {
-        return ResolveExportsTarget(env, pjson_url, exports, "", "", base);
-      } else if (exports->IsObject()) {
-        Local<Object> exports_obj = exports.As<Object>();
-        if (exports_obj->HasOwnProperty(env->context(), env->dot_string())
-            .FromJust()) {
-          Local<Value> target =
-              exports_obj->Get(env->context(), env->dot_string())
-              .ToLocalChecked();
-          return ResolveExportsTarget(env, pjson_url, target, "", "", base);
+      if (!exports->IsFalse()) {
+        Maybe<bool> isConditionalExportsMainSugar =
+            IsConditionalExportsMainSugar(env, exports, pjson_url, base);
+        if (isConditionalExportsMainSugar.IsNothing())
+          return Nothing<URL>();
+        if (isConditionalExportsMainSugar.FromJust()) {
+          return ResolveExportsTarget(env, pjson_url, exports, "", "", base);
+        } else if (exports->IsObject()) {
+          Local<Object> exports_obj = exports.As<Object>();
+          if (exports_obj->HasOwnProperty(env->context(), env->dot_string())
+              .FromJust()) {
+            Local<Value> target =
+                exports_obj->Get(env->context(), env->dot_string())
+                .ToLocalChecked();
+            return ResolveExportsTarget(env, pjson_url, target, "", "", base);
+          }
         }
+        std::string msg = "No \"exports\" main resolved in " +
+            pjson_url.ToFilePath();
+        node::THROW_ERR_PACKAGE_PATH_NOT_EXPORTED(env, msg.c_str());
       }
-      std::string msg = "No \"exports\" main resolved in " +
-          pjson_url.ToFilePath();
-      node::THROW_ERR_PACKAGE_PATH_NOT_EXPORTED(env, msg.c_str());
     }
     if (pcfg.has_main == HasMain::Yes) {
       URL resolved(pcfg.main, pjson_url);

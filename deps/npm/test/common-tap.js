@@ -3,7 +3,6 @@
 
 const configCommon = require('./common-config.js')
 var fs = require('graceful-fs')
-var readCmdShim = require('read-cmd-shim')
 var isWindows = require('../lib/utils/is-windows.js')
 var Bluebird = require('bluebird')
 
@@ -207,14 +206,6 @@ exports.makeGitRepo = function (params, cb) {
   chain(commands, cb)
 }
 
-exports.readBinLink = function (path) {
-  if (isWindows) {
-    return readCmdShim.sync(path)
-  } else {
-    return fs.readlinkSync(path)
-  }
-}
-
 exports.skipIfWindows = function (why) {
   if (!isWindows) return
   if (!why) why = 'this test not available on windows'
@@ -282,9 +273,4 @@ Environment.prototype.extend = function (env) {
     })
   }
   return self
-}
-
-var reEscape = /[\\[\](){}*?+.^$|]/g
-exports.escapeForRe = function (string) {
-  return string.replace(reEscape, '\\$&')
 }

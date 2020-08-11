@@ -5,6 +5,10 @@ completion.usage = 'source <(npm completion)'
 var npm = require('./npm.js')
 var npmconf = require('./config/core.js')
 var configDefs = npmconf.defs
+const deref = require('./utils/deref-command.js')
+const { aliases, cmdList, plumbing } = require('./config/cmd-list.js')
+const aliasNames = Object.keys(aliases)
+const fullList = cmdList.concat(aliasNames).filter(c => !plumbing.includes(c))
 var configTypes = configDefs.types
 var shorthands = configDefs.shorthands
 var nopt = require('nopt')
@@ -53,25 +57,26 @@ function completion (args, cb) {
     return cb(e)
   }
 
+  const { COMP_CWORD, COMP_LINE, COMP_POINT } = process.env
+
   // if the COMP_* isn't in the env, then just dump the script.
-  if (process.env.COMP_CWORD === undefined ||
-      process.env.COMP_LINE === undefined ||
-      process.env.COMP_POINT === undefined) {
+  if (COMP_CWORD === undefined ||
+      COMP_LINE === undefined ||
+      COMP_POINT === undefined) {
     return dumpScript(cb)
   }
 
-  console.error(process.env.COMP_CWORD)
-  console.error(process.env.COMP_LINE)
-  console.error(process.env.COMP_POINT)
+  console.error({ COMP_CWORD, COMP_LINE, COMP_POINT })
 
   // get the partial line and partial word,
   // if the point isn't at the end.
   // ie, tabbing at: npm foo b|ar
-  var w = +process.env.COMP_CWORD
+  var w = +COMP_CWORD
   var words = args.map(unescape)
+  console.error({ words, args })
   var word = words[w]
-  var line = process.env.COMP_LINE
-  var point = +process.env.COMP_POINT
+  var line = COMP_LINE
+  var point = +COMP_POINT
   var partialLine = line.substr(0, point)
   var partialWords = words.slice(0, w)
 
@@ -121,8 +126,9 @@ function completion (args, cb) {
   var parsed = opts.conf =
     nopt(configTypes, shorthands, partialWords.slice(0, -1), 0)
   // check if there's a command already.
-  console.error(parsed)
+  console.error('PARSED', parsed)
   var cmd = parsed.argv.remain[1]
+  console.error('CMD', cmd)
   if (!cmd) return cmdCompl(opts, cb)
 
   Object.keys(parsed).forEach(function (k) {
@@ -243,6 +249,20 @@ function isFlag (word) {
 }
 
 // complete against the npm commands
+// if they all resolve to the same thing, just return the thing it already is
 function cmdCompl (opts, cb) {
-  return cb(null, npm.fullList)
+  console.error('CMD COMPL', opts.partialWord)
+  const matches = fullList.filter(c => c.startsWith(opts.partialWord))
+  console.error('MATCHES', matches)
+  if (!matches.length) {
+    return cb(null, matches)
+  }
+  const derefs = new Set([...matches.map(c => deref(c))])
+  if (derefs.size === 1) {
+    console.error('ONLY ONE MATCH', derefs)
+    for (const d of derefs) {
+      return cb(null, [d])
+    }
+  }
+  return cb(null, fullList)
 }

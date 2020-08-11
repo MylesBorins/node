@@ -38,13 +38,13 @@ Even if a package version is unpublished, that specific name and
 version combination can never be reused. In order to publish the
 package again, a new version number must be used. If you unpublish the entire package, you may not publish any new versions of that package until 24 hours have passed.
 
-To learn more about how unpublish is treated on the npm registry, see our <a href="https://www.npmjs.com/policies/unpublish" target="_blank" rel="noopener noreferrer"> unpublish policies</a>.
+To learn more about how unpublish is treated on the npm registry, see our <a href="https://www.npmjs.com/policies/unpublish" target="_blank" rel="noopener noreferrer"> unpublish policies</a>. 
 
 
 ### See Also
 
-* [npm deprecate](/cli-commands/npm-deprecate)
-* [npm publish](/cli-commands/npm-publish)
+* [npm deprecate](/cli-commands/deprecate)
+* [npm publish](/cli-commands/publish)
 * [npm registry](/using-npm/registry)
-* [npm adduser](/cli-commands/npm-adduser)
-* [npm owner](/cli-commands/npm-owner)
+* [npm adduser](/cli-commands/adduser)
+* [npm owner](/cli-commands/owner)

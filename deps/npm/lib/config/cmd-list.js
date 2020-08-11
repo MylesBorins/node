@@ -1,62 +1,69 @@
 // short names for common things
-var shorthands = {
-  'un': 'uninstall',
-  'rb': 'rebuild',
-  'list': 'ls',
-  'ln': 'link',
-  'create': 'init',
-  'i': 'install',
-  'it': 'install-test',
-  'cit': 'install-ci-test',
-  'up': 'update',
-  'c': 'config',
-  's': 'search',
-  'se': 'search',
-  'unstar': 'star', // same function
-  'tst': 'test',
-  't': 'test',
-  'ddp': 'dedupe',
-  'v': 'view',
-  'run': 'run-script',
+const shorthands = {
+  un: 'uninstall',
+  rb: 'rebuild',
+  list: 'ls',
+  ln: 'link',
+  create: 'init',
+  i: 'install',
+  it: 'install-test',
+  cit: 'install-ci-test',
+  up: 'update',
+  c: 'config',
+  s: 'search',
+  se: 'search',
+  unstar: 'star', // same function
+  tst: 'test',
+  t: 'test',
+  ddp: 'dedupe',
+  v: 'view',
+  run: 'run-script',
   'clean-install': 'ci',
-  'clean-install-test': 'cit'
+  'clean-install-test': 'cit',
+  x: 'exec'
 }
 
-var affordances = {
-  'la': 'ls',
-  'll': 'ls',
-  'verison': 'version',
-  'ic': 'ci',
-  'innit': 'init',
-  'isntall': 'install',
+const affordances = {
+  la: 'll',
+  verison: 'version',
+  ic: 'ci',
+  innit: 'init',
+  // manually abbrev so that install-test doesn't make insta stop working
+  in: 'install',
+  ins: 'install',
+  inst: 'install',
+  insta: 'install',
+  instal: 'install',
+  isnt: 'install',
+  isnta: 'install',
+  isntal: 'install',
   'install-clean': 'ci',
   'isntall-clean': 'ci',
+  hlep: 'help',
   'dist-tags': 'dist-tag',
-  'apihelp': 'help',
-  'find-dupes': 'dedupe',
-  'upgrade': 'update',
-  'udpate': 'update',
-  'login': 'adduser',
+  upgrade: 'update',
+  udpate: 'update',
+  login: 'adduser',
   'add-user': 'adduser',
-  'author': 'owner',
-  'home': 'docs',
-  'issues': 'bugs',
-  'info': 'view',
-  'show': 'view',
-  'find': 'search',
-  'add': 'install',
-  'unlink': 'uninstall',
-  'remove': 'uninstall',
-  'rm': 'uninstall',
-  'r': 'uninstall',
-  'rum': 'run-script',
-  'sit': 'cit',
-  'urn': 'run-script',
-  'ogr': 'org'
+  author: 'owner',
+  home: 'docs',
+  issues: 'bugs',
+  info: 'view',
+  show: 'view',
+  find: 'search',
+  add: 'install',
+  unlink: 'uninstall',
+  remove: 'uninstall',
+  rm: 'uninstall',
+  r: 'uninstall',
+  rum: 'run-script',
+  sit: 'cit',
+  urn: 'run-script',
+  ogr: 'org'
 }
 
 // these are filenames in .
-var cmdList = [
+const cmdList = [
   'ci',
   'install-ci-test',
   'install',
@@ -70,6 +77,7 @@ var cmdList = [
   'outdated',
   'prune',
   'pack',
+  'find-dupes',
   'dedupe',
   'hook',
 
@@ -95,8 +103,8 @@ var cmdList = [
   'org',
 
   'help',
-  'help-search',
   'ls',
+  'll',
   'search',
   'view',
   'init',
@@ -119,18 +127,15 @@ var cmdList = [
   'restart',
   'run-script',
   'completion',
-  'doctor'
+  'doctor',
+  'exec'
 ]
 
-var plumbing = [
-  'build',
-  'unbuild',
-  'xmas',
-  'substack',
-  'visnup'
-]
-module.exports.aliases = Object.assign({}, shorthands, affordances)
-module.exports.shorthands = shorthands
-module.exports.affordances = affordances
-module.exports.cmdList = cmdList
-module.exports.plumbing = plumbing
+const plumbing = ['birthday', 'help-search']
+module.exports = {
+  aliases: Object.assign({}, shorthands, affordances),
+  shorthands,
+  affordances,
+  cmdList,
+  plumbing
+}
